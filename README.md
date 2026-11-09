@@ -1,3 +1,5 @@
+<img src="app/app/src/main/res/mipmap-xxxhdpi/ic_diary_launcher.png" alt="听歌日记图标" width="100">
+
 # 听歌日记
 
 把音乐留在日记里。听歌日记由 Android App 和 **AM++ 采集插件**组成：插件在 AM++ 运行时采集 Apple Music 的播放记录，App 在本机展示听歌历史、统计、偏好与分享图片。
