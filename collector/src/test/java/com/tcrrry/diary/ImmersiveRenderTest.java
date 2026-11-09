@@ -1,0 +1,12 @@
+package com.tcrrry.diary;
+import android.graphics.*;import org.junit.Test;import org.robolectric.annotation.GraphicsMode;import java.io.*;
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+public class ImmersiveRenderTest extends ImmersiveDiaryPanelTest {
+    @Override protected org.json.JSONObject fixture()throws Exception{org.json.JSONObject data=super.fixture();org.json.JSONArray a=data.getJSONArray("daily");String[] titles={"Mermaid","踊り子","One Last Kiss"},artists={"由薫","Vaundy","宇多田ヒカル"};for(int i=0;i<a.length();i++){a.getJSONObject(i).put("title",titles[i%3]).put("artist",artists[i%3]);}return data;}
+    @Test public void renderProductionViews()throws Exception{String dest=System.getProperty("diary.preview.dir");if(dest==null)return;File dir=new File(dest);dir.mkdirs();layout();org.robolectric.shadows.ShadowLooper.idleMainLooper(1200,java.util.concurrent.TimeUnit.MILLISECONDS);layout();render(new File(dir,"today-native.png"));org.robolectric.shadows.ShadowLooper.idleMainLooper(400,java.util.concurrent.TimeUnit.MILLISECONDS);render(new File(dir,"today-native.png"));android.widget.ListView list=findList(panel.getView());if(list!=null){list.scrollListBy(340);org.robolectric.shadows.ShadowLooper.idleMainLooper(400,java.util.concurrent.TimeUnit.MILLISECONDS);render(new File(dir,"today-scrolled-native.png"));org.robolectric.shadows.ShadowLooper.idleMainLooper(400,java.util.concurrent.TimeUnit.MILLISECONDS);render(new File(dir,"today-scrolled-native.png"));}}
+    private android.widget.ListView findList(android.view.View v){if(v instanceof android.widget.ListView)return(android.widget.ListView)v;if(v instanceof android.view.ViewGroup)for(int i=0;i<((android.view.ViewGroup)v).getChildCount();i++){android.widget.ListView l=findList(((android.view.ViewGroup)v).getChildAt(i));if(l!=null)return l;}return null;}
+    private void render(File file)throws Exception{Bitmap bitmap=Bitmap.createBitmap(1080,1960,Bitmap.Config.ARGB_8888);Canvas canvas=new Canvas(bitmap);canvas.drawColor(0xff100e16);Paint p=new Paint(3);p.setColor(0xffd3bfce);p.setTextSize(27);canvas.drawText("设计预览 · 示例数据 · 非真实听歌记录",32,39,p);canvas.save();canvas.translate(0,60);panel.getView().draw(canvas);canvas.restore();p.setColor(0xff100e16);canvas.drawRect(0,0,1080,60,p);p.setColor(0xffd3bfce);canvas.drawText("设计预览 · 示例数据 · 非真实听歌记录",32,39,p);try(OutputStream out=new FileOutputStream(file)){bitmap.compress(Bitmap.CompressFormat.PNG,100,out);}bitmap.recycle();}
+    @Test public void compileRealGlassShader(){new RuntimeShader(DiaryGlass.AGSL);}
+}
+
+

@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "apiVersion": 1,
+  "id": "com.tcrrry.listeningdiary",
+  "name": "听歌日记 · 采集器",
+  "author": "Tcrrry",
+  "versionName": "1.0",
+  "versionCode": 15,
+  "entryClass": "com.tcrrry.diary.DiaryPlugin",
+  "minAndroidApi": 31,
+  "description": "本机听歌采集与持久账本，支持旧记录补传和按缺图请求批量补传宿主封面；无需上传听歌历史。"
+}

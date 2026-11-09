@@ -1,0 +1,1 @@
+package z3;import com.apple.android.music.playback.model.PlayerQueueItem;public class y{public final PlayerQueueItem queue;public y(PlayerQueueItem q){queue=q;}}

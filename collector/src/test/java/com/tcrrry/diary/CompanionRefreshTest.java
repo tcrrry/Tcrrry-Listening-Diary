@@ -1,0 +1,28 @@
+package com.tcrrry.diary;
+
+import android.content.*;import android.content.pm.ProviderInfo;import android.database.Cursor;import android.net.Uri;import android.os.Bundle;import java.io.*;import org.json.*;import org.junit.*;import org.junit.runner.RunWith;import org.robolectric.*;import org.robolectric.annotation.Config;import org.robolectric.shadows.ShadowContentResolver;import static org.junit.Assert.*;
+
+@RunWith(RobolectricTestRunner.class) @Config(sdk=35,manifest=Config.NONE)
+public class CompanionRefreshTest {
+    private DiaryStore store;private CompanionBridge bridge;private Receiver receiver;
+    @Before public void setup(){Context context=RuntimeEnvironment.getApplication();context.getSharedPreferences("com.tcrrry.listeningdiary.bridge",0).edit().clear().commit();File root=new File(context.getCacheDir(),"refresh-"+System.nanoTime());root.mkdirs();store=new DiaryStore(root);bridge=new CompanionBridge(context,new File(root,"art"));receiver=new Receiver();ProviderInfo info=new ProviderInfo();info.authority="com.tcrrry.listeningdiary.bridge";receiver.attachInfo(context,info);ShadowContentResolver.registerProviderInternal(info.authority,receiver);}
+    @After public void close(){store.close();}
+    private void save(long start){ListeningClock.Sample s=new ListeningClock.Sample("song","曲","歌手","专辑",start,0,0,240000,true,1);store.save(new ListeningClock.Chunk(s,"visit",start,15000,"test"));}
+    @Test public void approvalThenForcedRefreshBypassesOldFifteenSecondWait(){save(1000000);bridge.sync(store,"曲","正在记录",false);assertEquals(0,receiver.received);receiver.approved=true;bridge.sync(store,"曲","正在记录",false);assertEquals(0,receiver.received);bridge.sync(store,"曲","正在记录",true);assertTrue(receiver.received>0);assertEquals(15000,receiver.ms);assertEquals("曲",receiver.title);}
+    @Test public void immediateRefreshSendsLatestCheckpointWithoutDoubleCounting(){receiver.approved=true;save(1000000);bridge.sync(store,"曲","正在记录",true);save(1015000);bridge.sync(store,"曲","正在记录",true);assertEquals(30000,receiver.ms);assertTrue(receiver.received>=2);bridge.sync(store,"曲","已暂停",true);assertEquals(30000,receiver.ms);assertTrue(receiver.received>=3);assertEquals("已暂停",receiver.status);}
+    @Test public void evenEmptyLedgerConfirmsLiveConnection(){receiver.approved=true;bridge.sync(store,"","等待播放",true);assertEquals(1,receiver.received);assertEquals(0,receiver.ms);}
+    @Test public void exactPlayingIdIsSentAlsoWhenNoRowsChanged(){receiver.approved=true;save(1000000);bridge.sync(store,"catalog-123","同名歌曲","正在记录",true);assertEquals("catalog-123",receiver.trackId);bridge.sync(store,"catalog-123","同名歌曲","已暂停",true);assertEquals("catalog-123",receiver.trackId);assertEquals("已暂停",receiver.status);assertEquals(15000,receiver.ms);}
+    @Test public void oldAppCannotConsumeEventCursorAndNewAppBackfillsAllEvents()throws Exception{receiver.approved=true;save(1000000);for(int i=0;i<70;i++)store.saveEvent(new SkipTracker.Event(new SkipTracker.Command("next","A",1,100000+i,1000+i,60000,240000),"B"));bridge.sync(store,"A","曲","正在记录",true,100000);assertEquals(0,receiver.eventIds.size());receiver.eventsSupported=true;bridge.sync(store,"A","曲","正在记录",true,100000);assertEquals(70,receiver.eventIds.size());assertEquals(100000,receiver.since);bridge.sync(store,"A","曲","正在记录",true,100000);assertEquals(70,receiver.eventIds.size());assertEquals(15000,receiver.ms);}
+    @Test public void providerReplacementRetainsUnacknowledgedRowsAndReconnects(){
+        receiver.approved=true;save(1000000);bridge.sync(store,"曲","正在记录",true);assertEquals(15000,receiver.ms);
+        receiver.broken=true;save(1015000);bridge.sync(store,"曲","正在记录",true);assertTrue(bridge.status.contains("同步未完成"));
+        save(1030000);Receiver replacement=new Receiver();replacement.approved=true;ProviderInfo info=new ProviderInfo();info.authority="com.tcrrry.listeningdiary.bridge";replacement.attachInfo(RuntimeEnvironment.getApplication(),info);ShadowContentResolver.registerProviderInternal(info.authority,replacement);
+        bridge.sync(store,"曲","正在记录",true);assertEquals(45000,replacement.ms);assertTrue(bridge.status.contains("本地同步正常"));
+    }
+    public static final class Receiver extends ContentProvider {
+        boolean approved,eventsSupported,broken;long since;java.util.Set<String> eventIds=new java.util.HashSet<>();int received;long ms;String title,status,trackId;
+        @Override public boolean onCreate(){return true;}
+        @Override public Bundle call(String method,String arg,Bundle extras){Bundle b=new Bundle();if(method.equals("hello")){b.putBoolean("approved",approved);if(eventsSupported)b.putInt("eventSupport",1);b.putString("generation","generation");return b;}try{if(broken)throw new IllegalStateException("provider replaced");JSONObject p=new JSONObject(extras.getString("payload"));received++;since=p.optLong("eventsSince");JSONArray events=p.optJSONArray("events");if(events!=null)for(int i=0;i<events.length();i++)eventIds.add(events.getJSONObject(i).getString("event_id"));title=p.optString("nowTitle");trackId=p.optString("nowTrackId");status=p.optString("status");JSONArray spans=p.getJSONArray("spans");for(int i=0;i<spans.length();i++)ms=Math.max(ms,spans.getJSONObject(i).getLong("ms"));b.putBoolean("accepted",true);return b;}catch(Exception e){throw new IllegalStateException(e);}}
+        @Override public Cursor query(Uri u,String[] p,String s,String[] a,String o){return null;}@Override public String getType(Uri u){return null;}@Override public Uri insert(Uri u,ContentValues v){return null;}@Override public int delete(Uri u,String s,String[] a){return 0;}@Override public int update(Uri u,ContentValues v,String s,String[] a){return 0;}
+    }
+}

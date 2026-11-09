@@ -1,0 +1,28 @@
+package com.tcrrry.diary;
+import android.content.*;import android.content.pm.ProviderInfo;import android.database.Cursor;import android.net.Uri;import android.os.Bundle;import android.graphics.*;import java.io.*;import java.util.*;import org.json.*;import org.junit.*;import org.junit.runner.RunWith;import org.robolectric.*;import org.robolectric.annotation.*;import org.robolectric.shadows.ShadowContentResolver;import static org.junit.Assert.*;
+
+@RunWith(RobolectricTestRunner.class) @Config(sdk=35,manifest=Config.NONE) @GraphicsMode(GraphicsMode.Mode.NATIVE)
+public class CompanionArtworkTest {
+    private DiaryStore store;private CompanionBridge bridge;private Receiver receiver;private File art;
+    @Before public void setup()throws Exception{Context context=RuntimeEnvironment.getApplication();context.getSharedPreferences("com.tcrrry.listeningdiary.bridge",0).edit().clear().commit();File root=new File(context.getCacheDir(),"bridge-art-"+System.nanoTime());art=new File(root,"art");art.mkdirs();store=new DiaryStore(root);receiver=new Receiver();ProviderInfo info=new ProviderInfo();info.authority="com.tcrrry.listeningdiary.bridge";receiver.attachInfo(context,info);ShadowContentResolver.registerProviderInternal(info.authority,receiver);Bitmap bitmap=Bitmap.createBitmap(64,64,Bitmap.Config.ARGB_8888);bitmap.eraseColor(0xff785698);for(int i=0;i<12;i++){String id="song-"+i;receiver.missing.add(id);try(FileOutputStream out=new FileOutputStream(new File(art,DiaryPlugin.artKey(id)+".jpg"))){bitmap.compress(Bitmap.CompressFormat.JPEG,80,out);}}bitmap.recycle();bridge=new CompanionBridge(context,art);}
+    @After public void close(){store.close();}
+    @Test public void requestedCoversBackfillEvenWhenNoNewLedgerRows(){bridge.sync(store,"歌","正在记录",true);assertEquals(12,receiver.received.size());assertTrue(receiver.batches>=2);assertTrue(receiver.maxBytes<370000);assertEquals(0,receiver.rows);}
+    @Test public void rejectedArtworkBatchIsRetriedBeforeAcknowledging(){receiver.accept=false;bridge.sync(store,"歌","暂停",true);assertEquals(0,receiver.received.size());receiver.accept=true;bridge.sync(store,"歌","暂停",true);assertEquals(12,receiver.received.size());}
+    @Test public void sessionCoverForAConfirmedNativeTrackIsCachedAndDelivered()throws Exception{
+        DiaryPlugin plugin=new DiaryPlugin();java.util.concurrent.ExecutorService executor=java.util.concurrent.Executors.newSingleThreadExecutor();
+        java.lang.reflect.Field directory=DiaryPlugin.class.getDeclaredField("artDirectory");directory.setAccessible(true);directory.set(plugin,art);
+        java.lang.reflect.Field worker=DiaryPlugin.class.getDeclaredField("worker");worker.setAccessible(true);worker.set(plugin,executor);
+        Bitmap bitmap=Bitmap.createBitmap(80,80,Bitmap.Config.ARGB_8888);bitmap.eraseColor(0xff267799);
+        android.media.MediaMetadata nativeItem=new android.media.MediaMetadata.Builder().putString(android.media.MediaMetadata.METADATA_KEY_MEDIA_ID,"local-track-1").putString(android.media.MediaMetadata.METADATA_KEY_TITLE,"小孩 (Live)").putString(android.media.MediaMetadata.METADATA_KEY_ARTIST,"歌手").putString(android.media.MediaMetadata.METADATA_KEY_ALBUM,"现场专辑").putLong(android.media.MediaMetadata.METADATA_KEY_DURATION,200000).build();
+        android.media.MediaMetadata sessionItem=new android.media.MediaMetadata.Builder().putString(android.media.MediaMetadata.METADATA_KEY_MEDIA_ID,"different-session-id").putString(android.media.MediaMetadata.METADATA_KEY_TITLE,"小孩 (Live)").putString(android.media.MediaMetadata.METADATA_KEY_ARTIST,"歌手").putString(android.media.MediaMetadata.METADATA_KEY_ALBUM,"现场专辑").putLong(android.media.MediaMetadata.METADATA_KEY_DURATION,200500).putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART,bitmap).build();
+        java.lang.reflect.Method pair=DiaryPlugin.class.getDeclaredMethod("cachePairedArt",android.media.MediaMetadata.class,android.media.MediaMetadata.class);pair.setAccessible(true);pair.invoke(plugin,nativeItem,sessionItem);
+        executor.shutdown();assertTrue(executor.awaitTermination(5,java.util.concurrent.TimeUnit.SECONDS));assertTrue(new File(art,DiaryPlugin.artKey("local-track-1")+".jpg").isFile());
+        receiver.missing.add("local-track-1");bridge.sync(store,"小孩 (Live)","正在记录",true);assertTrue(receiver.received.contains("local-track-1"));bitmap.recycle();
+    }
+    static final class Receiver extends ContentProvider {
+        final Set<String> missing=new LinkedHashSet<>(),received=new HashSet<>();boolean accept=true;int batches,rows,maxBytes;
+        public boolean onCreate(){return true;}
+        public Bundle call(String method,String arg,Bundle extras){Bundle result=new Bundle();if("hello".equals(method)){result.putBoolean("approved",true);result.putString("generation","test-generation");result.putString("neededArt",new JSONArray(missing).toString());return result;}try{String text=extras.getString("payload");maxBytes=Math.max(maxBytes,text.getBytes("UTF-8").length);batches++;if(accept){JSONObject body=new JSONObject(text);rows+=body.getJSONArray("spans").length();JSONArray art=body.getJSONArray("art");for(int i=0;i<art.length();i++){String id=art.getJSONObject(i).getString("id");received.add(id);missing.remove(id);}}result.putBoolean("accepted",accept);return result;}catch(Exception e){throw new RuntimeException(e);}}
+        public Cursor query(Uri u,String[] p,String s,String[] a,String o){return null;}public String getType(Uri u){return null;}public Uri insert(Uri u,ContentValues v){return null;}public int delete(Uri u,String s,String[] a){return 0;}public int update(Uri u,ContentValues v,String s,String[] a){return 0;}
+    }
+}

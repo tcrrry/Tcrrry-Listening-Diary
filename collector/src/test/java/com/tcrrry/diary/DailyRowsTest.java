@@ -1,0 +1,12 @@
+package com.tcrrry.diary;
+import org.json.*;import org.junit.*;import org.junit.runner.RunWith;import org.robolectric.RobolectricTestRunner;import org.robolectric.annotation.Config;import java.util.*;import static org.junit.Assert.*;
+@RunWith(RobolectricTestRunner.class) @Config(sdk=35,manifest=Config.NONE)
+public class DailyRowsTest {
+    JSONObject row(String id,String visit,long start,long ms)throws Exception{return new JSONObject().put("id",id).put("title","Same title").put("visit",visit).put("start",start).put("end",start+ms).put("ms",ms).put("duration",240000);}
+    @Test public void sequencePreservesRepeatedPlays()throws Exception{JSONArray a=new JSONArray().put(row("a","1",100,40000)).put(row("b","2",200,40000)).put(row("a","3",300,40000));List<JSONObject> r=DailyRows.order(a,"sequence");assertEquals(3,r.size());assertEquals("1",r.get(0).getString("visit"));assertEquals("3",r.get(2).getString("visit"));}
+    @Test public void reverseChronologyIsExplicit()throws Exception{JSONArray a=new JSONArray().put(row("a","1",100,10000)).put(row("a","2",200,10000));assertEquals("2",DailyRows.order(a,"latest").get(0).getString("visit"));}
+    @Test public void countModeGroupsByIdentityAndExcludesShortTrials()throws Exception{JSONArray a=new JSONArray().put(row("a","1",100,5000)).put(row("a","2",200,40000)).put(row("b","3",300,60000)).put(row("b","4",400,60000));List<JSONObject> r=DailyRows.order(a,"count");assertEquals(2,r.size());assertEquals("b",r.get(0).getString("id"));assertEquals(2,r.get(0).getInt("plays"));assertEquals(1,r.get(1).getInt("plays"));assertEquals(2,r.get(1).getInt("occurrences"));}
+    @Test public void durationSumsOnlyCreditedListeningTime()throws Exception{JSONArray a=new JSONArray().put(row("a","1",100,30000)).put(row("a","2",200,30000)).put(row("b","3",300,45000));List<JSONObject> r=DailyRows.order(a,"duration");assertEquals("a",r.get(0).getString("id"));assertEquals(60000,r.get(0).getLong("ms"));}
+    @Test public void sortingNeverMutatesLedger()throws Exception{JSONArray a=new JSONArray().put(row("a","1",100,30000)).put(row("a","2",200,30000));String before=a.toString();DailyRows.order(a,"count");assertEquals(before,a.toString());}
+    @Test public void todayIsNotLimitedTo150Plays()throws Exception{JSONArray a=new JSONArray();for(int i=0;i<400;i++)a.put(row("a","v"+i,i*50000L,40000));assertEquals(400,DailyRows.order(a,"sequence").size());assertEquals(400,DailyRows.order(a,"count").get(0).getInt("plays"));}
+}

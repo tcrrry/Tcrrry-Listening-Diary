@@ -1,0 +1,2 @@
+package com.tcrrry.diary;
+public final class ArtworkKeys { public static String hash(String id){try{byte[] bytes=java.security.MessageDigest.getInstance("SHA-256").digest(id.getBytes(java.nio.charset.StandardCharsets.UTF_8));StringBuilder b=new StringBuilder();for(byte value:bytes)b.append(String.format(java.util.Locale.ROOT,"%02x",value));return b.toString();}catch(Exception e){throw new IllegalStateException(e);}} }
