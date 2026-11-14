@@ -120,11 +120,27 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
     internal val images=DiaryArtwork(java.io.File(activity.filesDir,"art")).apply{network(imageNetwork);artistNetwork(artistPhotosEnabled);onMetadataChanged{if(foreground){previewMetadataEpoch++;metadataRefreshJob?.cancel();metadataRefreshJob=scope.launch{delay(1200);snapshotFlow{periodSwipePosition==null&&!loading}.first{it};refresh(true);if(summary){summaryJob?.join();if(summary&&foreground)refreshSummary()}}}}}
     private var job:Job?=null
     internal val collectorLink=CollectorLink(activity,scope){refresh(true)}
+    internal var lanStatus by mutableStateOf("尚未配对");private set
+    internal var lanPaired by mutableStateOf(false);private set
+    internal var lanCode by mutableStateOf<String?>(null);private set
+    internal var lanName by mutableStateOf("");private set
+    internal var lanManualAddress by mutableStateOf("");private set
+    internal var lanDevices by mutableStateOf<List<LanKnownDevice>>(emptyList());private set
+    private val lan=LanForegroundSync.shared(activity)
+    internal fun lanRename(name:String){runCatching{lan.rename(name);lanName=lan.ownName()}.onFailure{lanStatus=it.message?:"设备名称无效"}}
+    internal fun lanManualAddress(value:String):Boolean=runCatching{lan.manualAddress(value);lanManualAddress=lan.manualAddress();true}.getOrElse{lanStatus=it.message?:"地址无效";false}
+    internal fun lanPermissionDenied(){lanStatus="需要允许局域网权限才能发现并连接设备"}
+    internal fun lanCreateCode(){(activity as MainActivity).withLanPermission{runCatching{lanCode=lan.createCode{lanCode=null};lanPaired=lan.paired}.onFailure{lanStatus="无法生成配对码"}}}
+    internal fun lanJoin(code:String,address:String){(activity as MainActivity).withLanPermission{runCatching{lan.join(code,address){error->if(error==null){lanPaired=lan.paired;lanManualAddress=lan.manualAddress();lanCode=null}else lanStatus=error}}.onFailure{lanStatus=it.message?:"配对码无效"}}}
+    internal fun lanAddresses()=lan.localAddresses()
+    internal fun lanEnable(){(activity as MainActivity).withLanPermission{lan.start()}}
+    internal fun lanHideCode(){lan.hideCode();lanCode=null}
+    internal fun lanUnpair(){lan.unpair();lanCode=null;lanPaired=false;lanStatus="尚未配对"}
     val syncing get()=collectorLink.syncing
     val syncStatus get()=collectorLink.status
     private val observer=object:ContentObserver(Handler(Looper.getMainLooper())){override fun onChange(selfChange:Boolean){if(foreground){collectorLink.received();refresh(true)}}}
-    fun start(){if(foreground)return;foreground=true;startListeningClock();if(amTypeface==null&&fontJob?.isActive!=true)fontJob=scope.launch{amTypeface=withContext(Dispatchers.IO){runCatching{val host=activity.createPackageContext(BridgeIdentity.HOST,0);val rounded=host.resources.getIdentifier("sf_pro_rounded_android_ui","font",BridgeIdentity.HOST);val id=if(rounded!=0)rounded else host.resources.getIdentifier("sf_pro_android_ui","font",BridgeIdentity.HOST);if(id!=0)host.resources.getFont(id)else null}.getOrNull()}};images.active(true);imageEpoch++;activity.contentResolver.registerContentObserver(BridgeIdentity.URI,true,observer);approved=BridgeIdentity.approved(activity);refresh(false);if(!demo)collectorLink.start(approved)}
-    fun stop(){if(!foreground)return;summaryExitTicket++;summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();foreground=false;activity.contentResolver.unregisterContentObserver(observer);images.active(false)}
+    fun start(){if(foreground)return;foreground=true;lan.bind({lanStatus=it},{if(foreground)refresh(true)},{lanDevices=it});lanPaired=lan.paired;lanName=lan.ownName();lanManualAddress=lan.manualAddress();lanDevices=lan.peers();lan.start();startListeningClock();if(amTypeface==null&&fontJob?.isActive!=true)fontJob=scope.launch{amTypeface=withContext(Dispatchers.IO){runCatching{val host=activity.createPackageContext(BridgeIdentity.HOST,0);val rounded=host.resources.getIdentifier("sf_pro_rounded_android_ui","font",BridgeIdentity.HOST);val id=if(rounded!=0)rounded else host.resources.getIdentifier("sf_pro_android_ui","font",BridgeIdentity.HOST);if(id!=0)host.resources.getFont(id)else null}.getOrNull()}};images.active(true);imageEpoch++;activity.contentResolver.registerContentObserver(BridgeIdentity.URI,true,observer);approved=BridgeIdentity.approved(activity);refresh(false);if(!demo)collectorLink.start(approved)}
+    fun stop(){if(!foreground)return;lan.stop();lan.unbind();lanCode=null;summaryExitTicket++;summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();foreground=false;activity.contentResolver.unregisterContentObserver(observer);images.active(false)}
     fun close(){summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();appleListJob?.cancel();appleJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();job?.cancel();fontJob?.cancel();images.close()}
     private var summaryExitJob:Job?=null
     private var summaryExitTicket=0L
@@ -232,7 +248,7 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
                 // complete ledger here competes with ordinary day/week navigation and doubles
                 // a large object graph; refresh it after the summary is actually opened.
                 if(summaryFacts.report.history.isNotEmpty()||(!summary&&!key.demo))return@launch
-                val loaded=if(key.demo)withContext(Dispatchers.Default){summaryDemoReport() to key.revision}else withContext(Dispatchers.IO){DiaryDatabase.get(activity).readAllReportVersioned(key.policy)}
+                val loaded=if(key.demo)withContext(Dispatchers.Default){summaryDemoReport() to key.revision}else withContext(Dispatchers.IO){DiaryDatabase.projection(activity).readAllReportVersioned(key.policy)}
                 ensureActive();if(!isSummaryReadUsable(key,loaded.second)||epoch!=prefs.getLong("cache_epoch",0))return@launch
                 val facts=withContext(Dispatchers.Default){SummaryFacts(loaded.first)}
                 awaitSummaryRevealStable()
@@ -288,7 +304,7 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
                 var revision=key.revision
                 val alreadyWarm=summaryStamp==key&&isPreviewRevisionCurrent(key.revision)&&summaryFacts.report.history.isNotEmpty()
                 val facts=if(alreadyWarm)summaryFacts else {
-                    val loaded=if(key.demo)withContext(Dispatchers.Default){summaryDemoReport() to key.revision}else withContext(Dispatchers.IO){DiaryDatabase.get(activity).readAllReportVersioned(key.policy)}
+                    val loaded=if(key.demo)withContext(Dispatchers.Default){summaryDemoReport() to key.revision}else withContext(Dispatchers.IO){DiaryDatabase.projection(activity).readAllReportVersioned(key.policy)}
                     if(!isSummaryReadUsable(key,loaded.second)||epoch!=prefs.getLong("cache_epoch",0))return@launch
                     revision=loaded.second
                     val next=withContext(Dispatchers.Default){SummaryFacts(loaded.first)}
@@ -347,10 +363,13 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
         }
         val ticket=selectionSerial;val requestedDay=day;val requestedRange=range;val policy=dayPolicy
         job=scope.launch{
+            val timingStart=android.os.SystemClock.elapsedRealtime()
+            fun timing(stage:String){android.util.Log.i("DiaryTiming", "refresh $stage range=${requestedRange.name} elapsed=${android.os.SystemClock.elapsedRealtime()-timingStart}ms")}
             if(debounce)delay(180)
             try{
                 if(!debounce&&!demo&&report.history.isEmpty()){
                     val cached=withContext(Dispatchers.IO){DailyReportCache.read(activity,requestedDay,policy,requestedRange)}
+                    timing(if(cached==null)"cache-miss" else "cache-hit")
                     ensureActive();if(ticket!=selectionSerial)return@launch
                     if(cached!=null){
                         val computed=if(requestedRange==DiaryRange.DAY)null else withContext(Dispatchers.Default){computePeriod(cached,requestedDay,requestedRange)}
@@ -358,17 +377,26 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
                         retainedPeriodComputed=computed;report=cached;showingCached=true;loading=cached.history.isEmpty()
                     }
                 }
+                // Give the initial collector handshake a short opportunity to complete before
+                // starting a full-history projection under the shared database lock.
+                if(!debounce&&collectorLink.syncing){
+                    kotlinx.coroutines.withTimeoutOrNull(2500){snapshotFlow{collectorLink.syncing}.first{!it}}
+                    timing("collector-priority")
+                }
                 if(!debounce&&requestedRange==DiaryRange.DAY&&report.history.isEmpty()){
                     val quick=withContext(Dispatchers.IO){DiaryDatabase.get(activity).readDayPreview(requestedDay,policy)}
+                    timing(if(quick==null)"quick-empty" else "quick-ready")
                     ensureActive();if(ticket!=selectionSerial)return@launch
                     if(quick!=null){dataRevision=quick.second;report=quick.first;showingCached=true;loading=false}
                 }
-                val versioned=withContext(Dispatchers.IO){DiaryDatabase.get(activity).readReportVersioned(bounds(requestedDay,requestedRange),policy)}
+                val versioned=withContext(Dispatchers.IO){DiaryDatabase.projection(activity).readReportVersioned(bounds(requestedDay,requestedRange),policy)}
+                timing("full-ready")
+                val provisional=!isPreviewRevisionCurrent(versioned.second)
                 val result=versioned.first
                 val computed=if(requestedRange==DiaryRange.DAY)null else withContext(Dispatchers.Default){computePeriod(result,requestedDay,requestedRange)}
                 ensureActive();if(ticket!=selectionSerial)return@launch
                 retainedPeriodComputed=computed
-                dataRevision=versioned.second;report=result;error=null;loading=false;showingCached=false;periodTransitionReport=null
+                dataRevision=versioned.second;report=result;error=null;loading=false;showingCached=provisional;periodTransitionReport=null
                 if(result.segments.size<=80000)activePreparedPeriods()[requestedRange]=PreparedPeriod(result,computed,versioned.second,previewMetadataEpoch)
                 if(!demo)scope.launch(Dispatchers.IO){if(ticket==selectionSerial)DailyReportCache.write(activity,requestedDay,policy,result,versioned.second,requestedRange)}
                 val preparation=withContext(Dispatchers.Default){
@@ -381,7 +409,7 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
                 withContext(Dispatchers.IO){images.trackHints(result.history);if(!summary)images.focusTracks(preparation.first);images.artistTracks(preparation.second)}
                 ensureActive();if(ticket!=selectionSerial)return@launch
                 if(!summary)withContext(Dispatchers.IO){images.prefetchArtists(result.topArtists.map{it.name});images.prefetch(result.history.map{it.id}.distinct().takeLast(80))}
-            }catch(e:CancellationException){throw e}catch(e:Exception){periodTransitionReport=null;error="读取日记失败：${e.javaClass.simpleName}，请保留数据"}finally{
+            }catch(e:CancellationException){throw e}catch(e:Exception){timing("failed-${e.javaClass.simpleName}");periodTransitionReport=null;error="读取日记失败：${e.javaClass.simpleName}，请保留数据"}finally{
                 if(ticket==selectionSerial){loading=false;if(refreshPending){refreshPending=false;job=null;refresh(true)}}
             }
         }

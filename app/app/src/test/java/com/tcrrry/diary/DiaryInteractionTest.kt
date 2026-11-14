@@ -600,6 +600,19 @@ class DiaryInteractionTest {
         ui.onNodeWithTag("home-scroll").performTouchInput{val a=androidx.compose.ui.geometry.Offset(width*.8f,height*.08f);down(a);moveTo(a.copy(x=width*.65f),35);up()}
         ui.waitUntil(10000){ui.activity.controller.range==DiaryRange.WEEK};ui.waitForIdle()
     }
+    @Test fun cancelledShortPeriodDragNeverReboundsAfterReturning(){
+        ui.waitUntil(10000){runCatching{ui.onNodeWithTag("period-navigation").fetchSemanticsNode().config[PreparedPeriodsKey].contains("WEEK")}.getOrDefault(false)}
+        val bounds=ui.onNodeWithTag("period-navigation").fetchSemanticsNode().boundsInRoot;val w=bounds.width;val y=bounds.height*.08f
+        ui.mainClock.autoAdvance=false
+        try{
+            ui.onNodeWithTag("period-navigation").performTouchInput{down(androidx.compose.ui.geometry.Offset(w*.8f,y));moveTo(androidx.compose.ui.geometry.Offset(w*.65f,y),400)}
+            ui.mainClock.advanceTimeBy(32);ui.onNodeWithTag("period-navigation").performTouchInput{up()}
+            val samples=mutableListOf<Float>()
+            repeat(50){ui.mainClock.advanceTimeBy(16);org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle();samples+=ui.onNodeWithTag("period-navigation").fetchSemanticsNode().config[PeriodSeekFractionKey]}
+            Assert.assertTrue("cancelled transition must return without a second rebound: $samples",samples.zipWithNext().all{(a,b)->b<=a+.025f})
+            Assert.assertEquals(DiaryRange.DAY,ui.activity.controller.range)
+        }finally{ui.mainClock.autoAdvance=true}
+    }
     @Test fun yearAndSummaryFollowTheSameDrag(){
         ui.runOnUiThread{ui.activity.controller.select(range=DiaryRange.YEAR)};ui.waitForIdle()
         ui.onNodeWithTag("period-report").performTouchInput{down(androidx.compose.ui.geometry.Offset(width*.8f,height*.08f));moveTo(androidx.compose.ui.geometry.Offset(width*.55f,height*.08f))};ui.waitForIdle()

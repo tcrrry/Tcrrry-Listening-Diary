@@ -15,6 +15,59 @@ class DiaryDatabaseTest {
     @Before fun setup(){val c=RuntimeEnvironment.getApplication();val f=DiaryDatabase::class.java.getDeclaredField("instance");f.isAccessible=true;val old=f.get(null);if(old!=null){val d=DiaryDatabase::class.java.getDeclaredField("db");d.isAccessible=true;(d.get(old) as android.database.sqlite.SQLiteDatabase).close()};f.set(null,null);c.deleteDatabase("diary.db");java.io.File(c.filesDir,"diary.db").delete();java.io.File(c.filesDir,"diary.db-wal").delete();java.io.File(c.filesDir,"diary.db-shm").delete();c.getSharedPreferences("diary",Context.MODE_PRIVATE).edit().clear().commit();db=DiaryDatabase.get(c)}
     private fun payload(id:Long=1,ms:Long=30000,source:String="phone"):JSONObject {val start=day.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();return JSONObject().put("sourceId",source).put("tracks",JSONArray().put(JSONObject().put("id","song").put("title","歌曲").put("artist","歌手").put("album","专辑").put("duration",240000))).put("spans",JSONArray().put(JSONObject().put("id",id).put("visit","v$id").put("track","song").put("day",day.toString()).put("zone","UTC").put("start",start).put("end",start+ms).put("ms",ms)))}
     private fun report()=db.report(day,DiaryRange.DAY).toReport()
+    @Test fun overlappingPlaysFromDifferentSourcesRemainDistinctAndReplayIsIdempotent(){
+        db.ingest(payload(id=1,ms=30000,source="phone"))
+        db.ingest(payload(id=1,ms=30000,source="tablet"))
+        val before=report();assertEquals(60000L,before.ms);assertEquals(2,before.plays)
+        val backup=db.backup();db.ingest(backup,true);db.ingest(backup,true)
+        val after=report();assertEquals(60000L,after.ms);assertEquals(2,after.plays)
+    }
+    @Test fun lanBatchesPreserveIndependentOverlappingPlaysAndCommitCursor(){
+        db.ingest(payload(source="phone"));val store=db.lanStore();val peer="a".repeat(32)
+        val span=JSONObject(db.backup().getJSONArray("spans").getJSONObject(0).toString()).put("remote_id","tablet:1").put("visit","tablet:v1")
+        fun change(seq:Long,deleted:Boolean=false)=JSONObject().put("seq",seq).put("clock",seq).put("origin",peer).put("entity","spans").put("keys",JSONArray(listOf("tablet:1","",""))).put("deleted",deleted).apply{if(!deleted)put("row",span)}
+        store.apply(peer,0,listOf(change(1)))
+        assertEquals(60000L,report().ms);assertEquals(2,report().plays);assertEquals(1L,store.cursor(peer))
+        val emitted=store.changesAfter(0,100).size
+        store.apply(peer,1,listOf(change(2)));assertEquals(60000L,report().ms)
+        assertEquals("identical replay must not create an outgoing change",emitted,store.changesAfter(0,100).size)
+        assertThrows(IllegalArgumentException::class.java){store.apply(peer,0,listOf(change(1)))}
+        store.apply(peer,2,listOf(change(3,true)));assertEquals(30000L,report().ms);assertEquals(3L,store.cursor(peer))
+    }
+    @Test fun invalidLanBatchRollsBackEarlierDeleteAndCursor(){
+        db.ingest(payload(source="phone"));val store=db.lanStore();val peer="b".repeat(32)
+        val old=db.backup().getJSONArray("spans").getJSONObject(0)
+        val bad=JSONObject(old.toString()).put("remote_id","tablet:bad").put("visit","tablet:vbad").put("ms",-1)
+        val remove=JSONObject().put("seq",1).put("clock",100).put("origin",peer).put("entity","spans").put("keys",JSONArray(listOf("phone:1","",""))).put("deleted",true)
+        val invalid=JSONObject().put("seq",2).put("clock",101).put("origin",peer).put("entity","spans").put("keys",JSONArray(listOf("tablet:bad","",""))).put("deleted",false).put("row",bad)
+        assertThrows(IllegalArgumentException::class.java){store.apply(peer,0,listOf(remove,invalid))}
+        assertEquals(0L,store.cursor(peer));assertEquals(30000L,report().ms);assertEquals(1,report().plays)
+    }
+    @Test fun projectionLockDoesNotBlockCollectorAndNextProjectionSeesNewRecord(){
+        val reader=DiaryDatabase.projection(RuntimeEnvironment.getApplication())
+        val held=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+        val worker=java.util.concurrent.Executors.newFixedThreadPool(2)
+        try{
+            val slow=worker.submit { synchronized(reader){held.countDown();check(release.await(5,java.util.concurrent.TimeUnit.SECONDS))} }
+            assertTrue(held.await(2,java.util.concurrent.TimeUnit.SECONDS))
+            val write=worker.submit<Int>{db.ingest(payload())}
+            assertEquals(1,write.get(2,java.util.concurrent.TimeUnit.SECONDS).toInt())
+            release.countDown();slow.get(2,java.util.concurrent.TimeUnit.SECONDS)
+            val result=reader.readReportVersioned(bounds(day,DiaryRange.DAY),ListeningDayPolicy())
+            assertEquals(30000L,result.first.ms)
+            assertEquals(RuntimeEnvironment.getApplication().getSharedPreferences("diary",Context.MODE_PRIVATE).getLong("data_revision",0L),result.second)
+        }finally{release.countDown();worker.shutdownNow()}
+    }
+    @Test fun currentAutomaticDayFollowsRecentMidnightSession(){
+        val previous=day.minusDays(1);val batch=payload();val first=batch.getJSONArray("spans").getJSONObject(0)
+        val start=previous.atTime(23,30).atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        first.put("day",previous.toString()).put("start",start).put("end",start+30000).put("ms",30000)
+        val later=JSONObject(first.toString()).put("id",2).put("visit","v2").put("day",day.toString()).put("start",start+3600000).put("end",start+3630000)
+        batch.getJSONArray("spans").put(later);db.ingest(batch)
+        val now=day.atTime(1,0).atZone(java.time.ZoneOffset.UTC)
+        assertEquals(previous,db.currentListeningDay(now,ListeningDayPolicy(ListeningDayMode.AUTO)))
+        assertEquals(day,db.currentListeningDay(day.atTime(6,0).atZone(java.time.ZoneOffset.UTC),ListeningDayPolicy(ListeningDayMode.AUTO)))
+    }
     @Test fun dayPreviewMatchesCreditedRecordsAcrossFixedBoundary(){
         db.ingest(payload());val policy=ListeningDayPolicy(ListeningDayMode.FIXED,6);val previous=day.minusDays(1)
         val quick=db.readDayPreview(previous,policy)!!.first;val full=db.readReport(bounds(previous,DiaryRange.DAY),policy)

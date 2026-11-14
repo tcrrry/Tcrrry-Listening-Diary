@@ -20,12 +20,13 @@ fun bounds(day:LocalDate,range:DiaryRange):DayBounds=when(range){
 }
 
 /** Local mirror. Remote row keys are stable, so retries UPDATE snapshots instead of double counting. */
-class DiaryDatabase private constructor(private val context:Context) {
+class DiaryDatabase private constructor(private val context:Context,private val projectionOnly:Boolean=false) {
     val images=java.io.File(context.filesDir,"art").apply{mkdirs()}
     private val preferences=context.getSharedPreferences("diary",Context.MODE_PRIVATE)
     val generation:String=preferences.getString("generation",null)?:UUID.randomUUID().toString().also{preferences.edit().putString("generation",it).commit()}
     private val db=SQLiteDatabase.openOrCreateDatabase(java.io.File(context.filesDir,"diary.db"),null).apply {
         enableWriteAheadLogging()
+        if(!projectionOnly){
         execSQL("CREATE TABLE IF NOT EXISTS tracks(id TEXT PRIMARY KEY,title TEXT NOT NULL,artist TEXT NOT NULL,album TEXT NOT NULL,duration INTEGER NOT NULL)")
         execSQL("CREATE TABLE IF NOT EXISTS spans(id INTEGER PRIMARY KEY,remote_id TEXT UNIQUE NOT NULL,visit TEXT NOT NULL,track TEXT NOT NULL,day TEXT NOT NULL,zone TEXT NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,ms INTEGER NOT NULL)")
         val columns=mutableSetOf<String>();rawQuery("PRAGMA table_info(spans)",null).use{while(it.moveToNext())columns.add(it.getString(1))}
@@ -44,14 +45,23 @@ class DiaryDatabase private constructor(private val context:Context) {
         execSQL("CREATE INDEX IF NOT EXISTS import_spans_key ON import_spans(row_key,batch)")
         execSQL("CREATE VIEW IF NOT EXISTS diary_rows AS SELECT s.visit,s.track,s.day,s.zone,s.start,s.end,s.ms,t.title,t.artist,t.album,t.duration,0 imported,'' batch,'' row_key,'' reason,s.device,s.route_source,s.volume_pct FROM spans s JOIN tracks t ON t.id=s.track UNION ALL SELECT s.visit,s.track,s.day,s.zone,s.start,s.end,s.ms,t.title,t.artist,t.album,t.duration,1 imported,s.batch,s.row_key,s.reason,'' device,'' route_source,-1 volume_pct FROM import_spans s JOIN import_tracks t ON t.batch=s.batch AND t.id=s.track WHERE NOT EXISTS(SELECT 1 FROM import_spans earlier WHERE earlier.row_key=s.row_key AND earlier.batch<s.batch)")
         version=1
+        }
     }
     private var revision=preferences.getLong("data_revision",0L)
+    private var externalEpoch=preferences.getLong("cache_epoch",0L)
+    private fun updateProjectionRevision(){
+        if(!projectionOnly)return
+        val next=preferences.getLong("data_revision",0L);val epoch=preferences.getLong("cache_epoch",0L)
+        if(epoch!=externalEpoch){importedCache=null;importedProjection=null;externalEpoch=epoch}
+        if(next!=revision)revision=next
+        nativeCatalogVersion=preferences.getLong("catalog_revision",0L)
+    }
     private fun bumpRevision(invalidateCache:Boolean=false){revision++;val edit=preferences.edit().putLong("data_revision",revision);if(invalidateCache)edit.putLong("cache_epoch",preferences.getLong("cache_epoch",0L)+1);edit.commit()}
     private data class LedgerRow(val play:Play,val reason:String,val key:String)
     private var importedCache:List<LedgerRow>?=null
     private data class ImportedProjection(val rows:List<LedgerRow>,val policy:ListeningDayPolicy,val metadataVersion:Long,val catalogVersion:Long,val parts:List<DatedPlay>)
     private var importedProjection:ImportedProjection?=null
-    private var nativeCatalogVersion=0L
+    private var nativeCatalogVersion=preferences.getLong("catalog_revision",0L)
     private val metadata=TrackMetadata.shared(images)
     private var projectionKey:Triple<Long,ListeningDayPolicy,Long>?=null
     private var projected:List<DatedPlay> = emptyList()
@@ -60,6 +70,7 @@ class DiaryDatabase private constructor(private val context:Context) {
     private var importedSkipDays:Map<String,Long> = emptyMap()
     private var firstArtists:Map<String,String> = emptyMap()
     @Synchronized internal fun periodNewIdentities(day:LocalDate,range:DiaryRange,policy:ListeningDayPolicy,songIds:Set<String>,artistNames:Set<String>):Pair<Set<String>,Set<String>> {
+        updateProjectionRevision()
         if(projectionKey!=Triple(revision,policy,metadata.version()))readReport(bounds(day,range),policy)
         val bound=bounds(day,range);val start=LocalDate.parse(bound.from);val end=LocalDate.parse(bound.to)
         val first=HashMap<String,LocalDate>()
@@ -71,13 +82,16 @@ class DiaryDatabase private constructor(private val context:Context) {
 
     internal fun weeklyNewIdentities(day:LocalDate,policy:ListeningDayPolicy,songIds:Set<String>,artistNames:Set<String>)=periodNewIdentities(day,DiaryRange.WEEK,policy,songIds,artistNames)
 
-    @Synchronized internal fun readReportVersioned(bound:DayBounds,policy:ListeningDayPolicy):Pair<DiaryReport,Long> = readReport(bound,policy) to revision
+    @Synchronized internal fun readReportVersioned(bound:DayBounds,policy:ListeningDayPolicy):Pair<DiaryReport,Long> {updateProjectionRevision();val readRevision=revision;return readReport(bound,policy) to readRevision}
     /** Provisional day report avoids constructing the all-history projection at cold start. */
     @Synchronized internal fun readDayPreview(day:LocalDate,policy:ListeningDayPolicy):Pair<DiaryReport,Long>? {
         if(policy.mode==ListeningDayMode.AUTO)return null
         val start=day.minusDays(2).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
         val end=day.plusDays(3).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
-        val records=ledger("SELECT * FROM diary_rows WHERE start < $end AND end > $start")
+        // Every row's day is recorded in its own time zone. A generous five-day window
+        // covers zone offsets and the longest valid span while enabling day indexes.
+        val firstDay=day.minusDays(3).toString();val lastDay=day.plusDays(3).toString()
+        val records=ledger("SELECT * FROM diary_rows WHERE day >= '$firstDay' AND day <= '$lastDay' AND start < $end AND end > $start")
         val parts=listeningDays(records.map{it.play},policy).filter{it.day==day}
         if(parts.isEmpty())return null
         val segments=parts.map{it.play}.sortedBy{it.start}
@@ -88,17 +102,21 @@ class DiaryDatabase private constructor(private val context:Context) {
         return report to revision
     }
     @Synchronized internal fun durationForBounds(bound:DayBounds,policy:ListeningDayPolicy):Long {
+        updateProjectionRevision()
         if(projectionKey!=Triple(revision,policy,metadata.version()))readReport(bound,policy)
         val from=LocalDate.parse(bound.from);val to=LocalDate.parse(bound.to)
         return projectedDays.entries.asSequence().filter{it.key>=from&&it.key<=to}.sumOf{(_,parts)->parts.sumOf{it.play.ms}}
     }
-    @Synchronized internal fun readAllReportVersioned(policy:ListeningDayPolicy):Pair<DiaryReport,Long> = readReport(null,policy) to revision
+    @Synchronized internal fun readAllReportVersioned(policy:ListeningDayPolicy):Pair<DiaryReport,Long> {updateProjectionRevision();val readRevision=revision;return readReport(null,policy) to readRevision}
     @Synchronized internal fun currentListeningDay(now:java.time.ZonedDateTime,policy:ListeningDayPolicy):LocalDate {
         if(policy.mode!=ListeningDayMode.AUTO || now.hour>=6)return listeningToday(now,policy)
         val date=now.toLocalDate()
-        readReport(DayBounds(date.minusDays(1).toString(),date.toString()),policy)
         val timestamp=now.toInstant().toEpochMilli()
-        val previous=projected.asSequence().filter{it.play.start<=timestamp}.maxByOrNull{it.play.end}
+        // Automatic day selection only needs recent playback around the current night.
+        // Avoid rebuilding the lifetime report while the collector is opening its connection.
+        val first=date.minusDays(3).toString();val last=date.plusDays(1).toString()
+        val recent=ledger("SELECT * FROM diary_rows WHERE day >= '$first' AND day <= '$last' AND start <= $timestamp")
+        val previous=listeningDays(recent.map{it.play},policy).asSequence().filter{it.play.start<=timestamp}.maxByOrNull{it.play.end}
         return listeningToday(now,policy,previous)
     }
     private fun ledger(sql:String):List<LedgerRow> {
@@ -113,6 +131,7 @@ class DiaryDatabase private constructor(private val context:Context) {
     @Synchronized internal fun readReport(bound:DayBounds?,policy:ListeningDayPolicy=ListeningDayPolicy()):DiaryReport {
         val key=Triple(revision,policy,metadata.version())
         if(projectionKey!=key){
+            android.util.Log.i("DiaryTiming","projection start mode=${policy.mode} caller="+Throwable().stackTrace.drop(1).firstOrNull{it.className.contains("diary") }?.methodName)
             val imports=importedCache?:ledger("SELECT * FROM diary_rows WHERE imported=1").also{importedCache=it}
             val nativeRows=ledger("SELECT * FROM diary_rows WHERE imported=0")
             projectedRows=imports+nativeRows
@@ -198,7 +217,7 @@ class DiaryDatabase private constructor(private val context:Context) {
             out.endArray()
         };out.endObject();out.flush()
     }
-    @Synchronized fun ingest(payload:JSONObject,importing:Boolean=false):Int {
+    @Synchronized fun ingest(payload:JSONObject,importing:Boolean=false,lanIncremental:Boolean=false):Int {
         val explicit=payload.optString("format")=="listening-diary-app"
         val source=payload.optString("sourceId").ifBlank {preferences.getString("approved_source",null)?:"legacy"}
         require(source.matches(Regex("[A-Za-z0-9_-]{1,64}"))){"来源标识无效"}
@@ -218,6 +237,7 @@ class DiaryDatabase private constructor(private val context:Context) {
         for(i in 0 until tracks.length()){val t=tracks.getJSONObject(i);require(t.getString("id").length in 1..2048);for(k in listOf("title","artist","album"))require(t.optString(k).length<=4096)}
         for(i in 0 until spans.length()){val s=spans.getJSONObject(i);val start=s.getLong("start");val end=s.getLong("end");val ms=s.getLong("ms");require(start>=0&&end>start&&ms==end-start&&ms<=90_000_000){"记录时长无效"};LocalDate.parse(s.getString("day"));require(s.getString("track").length in 1..2048);require(s.getString("visit").length in 1..256);require(s.optString("zone").length<=128);require(s.optString("device").length<=160&&s.optString("route_source") in listOf("","audio_track","system_media"));require(s.optInt("volume_pct",-1) in -1..100);if(explicit)require(s.getString("remote_id").length<=160)}
         val restoreTables=if(importing&&explicit)validateImportBackup(payload)else emptyMap()
+        val hasImportedRows=restoreTables.values.any{it.length()>0}
         var catalogChanged=false
         db.beginTransaction()
         try {
@@ -246,8 +266,8 @@ class DiaryDatabase private constructor(private val context:Context) {
             for((table,items) in restoreTables)for(i in 0 until items.length()){val item=items.getJSONObject(i);val row=ContentValues();item.keys().forEach{k->val value=item.get(k);if(value is Number)row.put(k,value.toLong())else row.put(k,value.toString())};db.insertWithOnConflict(table,null,row,SQLiteDatabase.CONFLICT_IGNORE)}
             db.setTransactionSuccessful()
         } finally {db.endTransaction()}
-        if(catalogChanged)nativeCatalogVersion++
-        if(tracks.length()>0||spans.length()>0||events.length()>0||restoreTables.isNotEmpty()){bumpRevision(importing||restoreTables.isNotEmpty());if(restoreTables.isNotEmpty())importedCache=null}
+        if(catalogChanged){nativeCatalogVersion++;preferences.edit().putLong("catalog_revision",nativeCatalogVersion).commit()}
+        if(tracks.length()>0||spans.length()>0||events.length()>0||hasImportedRows){bumpRevision(if(lanIncremental)hasImportedRows else importing||hasImportedRows);if(hasImportedRows)importedCache=null}
         if(!importing)preferences.edit().putString("approved_source",source).putLong("last_sync",System.currentTimeMillis()).putLong("sync_serial",preferences.getLong("sync_serial",0)+1).putString("now_title",payload.optString("nowTitle")).putString("now_track_id",payload.optString("nowTrackId").takeIf{it.length<=2048}?:"").putString("record_state",payload.optString("status")).apply()
         payload.optJSONArray("art")?.let {art->for(i in 0 until minOf(8,art.length()))runCatching{val item=art.getJSONObject(i);val bytes=android.util.Base64.decode(item.getString("jpeg"),android.util.Base64.DEFAULT);require(bytes.size<=200000);val options=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true};android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,options);require(options.outWidth in 1..2048&&options.outHeight in 1..2048);java.io.File(images,ArtworkKeys.hash(item.getString("id"))+".jpg").let{file->if(!file.exists()){val temp=java.io.File.createTempFile("native-",".tmp",images);try{temp.writeBytes(bytes);java.nio.file.Files.move(temp.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING)}finally{temp.delete()}}}}}
         return spans.length()+events.length()
@@ -310,10 +330,95 @@ class DiaryDatabase private constructor(private val context:Context) {
     }
     @Synchronized internal fun removeApple(batch:String){db.beginTransaction();try{db.delete("import_spans","batch=?",arrayOf(batch));db.delete("import_tracks","batch=?",arrayOf(batch));db.delete("import_batches","id=?",arrayOf(batch));db.setTransactionSuccessful()}finally{db.endTransaction()};bumpRevision(true);importedCache=null}
     @Synchronized fun backup()=JSONObject().put("schemaVersion",1).put("format","listening-diary-app").put("sourceId","app").put("exportedAt",System.currentTimeMillis()).put("tracks",rows("SELECT * FROM tracks")).put("spans",rows("SELECT * FROM spans ORDER BY start")).put("events",rows("SELECT * FROM events ORDER BY at")).put("event_sources",rows("SELECT * FROM event_sources")).put("import_batches",rows("SELECT * FROM import_batches")).put("import_tracks",rows("SELECT * FROM import_tracks")).put("import_spans",rows("SELECT * FROM import_spans"))
+    /** The change journal is installed only after explicit device-pairing opt-in. */
+    @Synchronized internal fun lanStore():LanSyncStore {
+        check(!projectionOnly);LanChangeJournal.install(db);val owner=this
+        return object:LanSyncStore {
+            override fun replicaId():String=synchronized(owner){db.rawQuery("SELECT value FROM lan_state WHERE name='replica_id'",null).use{check(it.moveToFirst());it.getString(0)}}
+            override fun cursor(peer:String):Long=synchronized(owner){
+                require(peer.matches(Regex("[a-f0-9]{32}")))
+                db.rawQuery("SELECT value FROM lan_state WHERE name=?",arrayOf("peer:$peer")).use{if(it.moveToFirst())it.getString(0).toLong() else 0L}
+            }
+            override fun changesAfter(cursor:Long,limit:Int,skipOrigin:String?):List<JSONObject> = synchronized(owner){
+                LanChangeJournal.recordsAfter(db,cursor,limit,skipOrigin).map{record->
+                    if(record.skip)JSONObject().put("seq",record.change.sequence).put("skip",true)
+                    else JSONObject().put("seq",record.change.sequence).put("entity",record.change.table)
+                        .put("keys",JSONArray(record.change.keys)).put("deleted",record.row==null)
+                        .put("clock",record.clock).put("origin",record.origin)
+                        .apply{record.row?.let{put("row",it)}}
+                }
+            }
+            override fun apply(peer:String,expectedCursor:Long,changes:List<JSONObject>)=synchronized(owner){
+                require(peer.matches(Regex("[a-f0-9]{32}"))&&expectedCursor>=0&&changes.size<=256)
+                require(cursor(peer)==expectedCursor){"Peer cursor changed"}
+                var sequence=expectedCursor
+                data class Pending(val entity:String,val keys:List<String>,val deleted:Boolean,val row:JSONObject?,val clock:Long,val origin:String)
+                val valid=changes.mapNotNull{item->
+                    val next=item.getLong("seq");require(next>sequence);sequence=next
+                    if(item.optBoolean("skip"))return@mapNotNull null
+                    val entity=item.getString("entity");val table=LanChangeJournal.tableFor(entity)?:error("Unknown sync entity")
+                    val array=item.getJSONArray("keys");require(array.length()==3)
+                    val keys=(0 until table.keys.size).map{array.getString(it).also{v->require(v.isNotEmpty()&&v.length<=2048)}}
+                    val deleted=item.getBoolean("deleted");val row=if(deleted)null else item.getJSONObject("row")
+                    if(row!=null)for((i,key) in table.keys.withIndex())require(row.getString(key)==keys[i])
+                    val clock=item.getLong("clock");val origin=item.getString("origin")
+                    require(clock in 1..9_000_000_000_000_000L&&origin.matches(Regex("[a-f0-9]{32}")))
+                    Pending(entity,keys,deleted,row,clock,origin)
+                }
+                if(changes.isEmpty())return@synchronized
+                db.beginTransaction()
+                try{
+                    var pending=JSONObject().put("format","listening-diary-app").put("sourceId","lan")
+                    var hasRows=false;var removed=false
+                    val queued=mutableListOf<Pending>()
+                    fun saveVersion(item:Pending){
+                        val padded=item.keys+List(3-item.keys.size){""}
+                        db.execSQL("INSERT OR REPLACE INTO lan_versions(entity,key1,key2,key3,clock,origin) VALUES(?,?,?,?,?,?)",arrayOf<Any>(item.entity,*padded.toTypedArray(),item.clock,item.origin))
+                    }
+                    fun flush(){if(hasRows){ingest(pending,true,true);queued.forEach(::saveVersion);queued.clear();pending=JSONObject().put("format","listening-diary-app").put("sourceId","lan");hasRows=false}}
+                    // A journal may mention the same key more than once; records resolve
+                    // to its current state. Keep the last occurrence in this batch.
+                    val current=linkedMapOf<Pair<String,List<String>>,Pending>()
+                    for(item in valid)current[item.entity to item.keys]=item
+                    for(item in current.values){
+                        val padded=item.keys+List(3-item.keys.size){""}
+                        val version=db.rawQuery("SELECT clock,origin FROM lan_versions WHERE entity=? AND key1=? AND key2=? AND key3=?",arrayOf(item.entity,*padded.toTypedArray())).use{c->if(c.moveToFirst())c.getLong(0) to c.getString(1) else null}
+                        if(version!=null&&(item.clock<version.first||(item.clock==version.first&&item.origin<=version.second)))continue
+                        db.execSQL("UPDATE lan_state SET value=MAX(CAST(value AS INTEGER),?) WHERE name='logical_clock'",arrayOf(item.clock))
+                        if(item.deleted){
+                            flush();val table=LanChangeJournal.tableFor(item.entity)!!
+                            val where=table.keys.joinToString(" AND "){"\"$it\"=?"}
+                            if(db.delete(table.name,where,item.keys.toTypedArray())>0)removed=true else db.execSQL("INSERT INTO lan_changes(entity,key1,key2,key3,deleted) VALUES(?,?,?,?,1)",arrayOf(item.entity,*padded.toTypedArray()))
+                            saveVersion(item)
+                        }else{
+                            val list=pending.optJSONArray(item.entity)?:JSONArray().also{pending.put(item.entity,it)}
+                            list.put(item.row);queued.add(item);hasRows=true
+                        }
+                    }
+                    flush()
+                    db.execSQL("INSERT OR REPLACE INTO lan_state(name,value) VALUES(?,?)",arrayOf("peer:$peer",sequence.toString()))
+                    db.setTransactionSuccessful()
+                    if(removed){bumpRevision(true);importedCache=null;nativeCatalogVersion++;preferences.edit().putLong("catalog_revision",nativeCatalogVersion).commit()}
+                }finally{db.endTransaction()}
+            }
+        }
+    }
     @Synchronized fun neededArtwork():String {
         val result=JSONArray()
         rows("SELECT track id FROM diary_rows GROUP BY track ORDER BY MAX(end) DESC LIMIT 300").objects().forEach{row->val id=row.getString("id");if(!java.io.File(images,ArtworkKeys.hash(id)+".jpg").isFile&&result.length()<80)result.put(id)}
         return result.toString()
     }
-    companion object { @Volatile private var instance:DiaryDatabase?=null;fun get(context:Context):DiaryDatabase=instance?:synchronized(this){instance?:DiaryDatabase(context.applicationContext).also{instance=it}} }
+    companion object {
+        @Volatile private var instance:DiaryDatabase?=null
+        @Volatile private var projectionInstance:DiaryDatabase?=null
+        @Volatile private var projectionOwner:DiaryDatabase?=null
+        fun get(context:Context):DiaryDatabase=instance?:synchronized(this){instance?:DiaryDatabase(context.applicationContext).also{instance=it}}
+        internal fun projection(context:Context):DiaryDatabase {
+            val owner=get(context) // Initialize and migrate schema before the independent reader opens it.
+            return synchronized(this){
+                if(projectionOwner!==owner||projectionInstance==null){projectionInstance=DiaryDatabase(context.applicationContext,true);projectionOwner=owner}
+                projectionInstance!!
+            }
+        }
+    }
 }

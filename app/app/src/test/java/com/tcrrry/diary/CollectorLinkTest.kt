@@ -27,6 +27,11 @@ class CollectorLinkTest {
     @Test fun foregroundFallbackFindsBatchEvenWhenContentNotificationWasMissed(){link.start(false);assertTrue(sent.isEmpty());received();advance(2000);assertEquals(1,updates);link.stop();received();advance(10000);assertEquals(1,updates);assertFalse(link.syncing)}
     @Test fun returningToForegroundRequestsAgainAndStartIsIdempotent(){link.start(true);link.start(true);assertEquals(1,sent.size);link.stop();advance(15000);assertEquals(1,sent.size);link.start(true);assertEquals(2,sent.size);assertTrue(link.syncing)}
     @Test fun receivedNotificationConfirmsImmediatelyWithoutWaitingForPolling(){link.start(true);received();link.received();assertFalse(link.syncing);assertEquals("已收到采集器更新",link.status);advance(15000);assertEquals(1,sent.size)}
+    @Test fun syncTimeUpdatesFromAcceptedBatchWithoutWaitingForReport(){
+        link.start(true);assertEquals(0L,link.lastSync)
+        context.getSharedPreferences("diary",0).edit().putLong("last_sync",123456L).putLong("sync_serial",1L).commit()
+        link.received();assertEquals(123456L,link.lastSync);assertFalse(link.syncing)
+    }
     @Test fun oldTimestampCannotFalselyConfirmOrBlockNewReply(){context.getSharedPreferences("diary",0).edit().putLong("last_sync",Long.MAX_VALUE).commit();link.request();advance(500);assertTrue(link.syncing);received();advance(500);assertEquals("已收到采集器更新",link.status)}
     @Test fun lateRealReplyClearsTimeoutEvenWithoutANewButtonPress(){link.start(true);advance(CollectorLink.WAIT_MS+100);assertTrue(link.status!!.contains("暂未收到"));received();link.received();assertEquals("已收到采集器更新",link.status);assertFalse(link.syncing)}
     @Test fun requestCarriesUriGrantWithoutChangingBroadcastFilterMatching(){link.start(true);val intent=sent.single();assertNull(intent.data);assertEquals(BridgeIdentity.URI,intent.clipData!!.getItemAt(0).uri);assertTrue(intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION!=0);assertTrue(intent.flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION!=0)}

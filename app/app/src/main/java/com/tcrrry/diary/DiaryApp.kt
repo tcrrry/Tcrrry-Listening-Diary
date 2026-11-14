@@ -211,10 +211,12 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
             Column(Modifier.fillMaxWidth().weight(1f,false).verticalScroll(rememberScrollState()).padding(horizontal=26.dp).navigationBarsPadding().testTag("settings-scroll"),verticalArrangement=Arrangement.spacedBy(16.dp)){
                 Text("让音乐留下痕迹",fontSize=26.sp,fontWeight=FontWeight.Bold)
                 Button(onClick={c.connect()},enabled=!c.syncing,modifier=Modifier.fillMaxWidth()){Text(if(c.syncing)"正在同步…" else if(c.approved)"重新确认连接" else "连接 AM++ 采集器")}
-                Text(if(c.approved)"已授权 AM++ · ${if(c.report.lastSync>0)"最近同步 ${diaryClock(c.report.lastSync,c.use12Hour)}" else "等待首次同步"}" else "先允许本机 AM++ 提供播放记录，再启用采集插件。",color=Muted)
+                Text(if(c.approved)"已授权 AM++ · ${if(c.collectorLink.lastSync>0)"最近同步 ${diaryClock(c.collectorLink.lastSync,c.use12Hour)}" else "等待首次同步"}" else "先允许本机 AM++ 提供播放记录，再启用采集插件。",color=Muted)
                 c.syncStatus?.let{Text(it,fontSize=14.sp,color=Muted)}
                 if(c.approved)OutlinedButton(onClick={c.openHost()},modifier=Modifier.fillMaxWidth().testTag("open-am-sync")){Text("打开 AM++，恢复采集同步")}
                 Text("插件负责本机记录；App 负责展示。即使 App 关闭，启用的插件仍会采集。安装后首次同步可能需要稍等，旧记录会从插件补传。",color=Muted,fontSize=13.sp)
+                HorizontalDivider(color=Color.White.copy(alpha=.1f))
+                LanSyncSettings(c)
                 HorizontalDivider(color=Color.White.copy(alpha=.1f))
                 Text("外观",fontWeight=FontWeight.Bold)
                 Row(horizontalArrangement=Arrangement.spacedBy(10.dp)){DiaryThemeChoice.entries.forEach{choice->FilterChip(selected=c.theme==choice,onClick={c.theme(choice)},label={Text(choice.label)})}}
@@ -244,6 +246,52 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
     }
 }
 
+}
+
+@Composable private fun LanSyncSettings(c:DiaryController){
+    var entering by remember{mutableStateOf(false)}
+    var input by remember{mutableStateOf("")}
+    var address by remember{mutableStateOf("")}
+    var confirmUnpair by remember{mutableStateOf(false)}
+    var rename by remember{mutableStateOf(false)}
+    var editedName by remember{mutableStateOf("")}
+    var editAddress by remember{mutableStateOf(false)}
+    var editedAddress by remember{mutableStateOf("")}
+    LaunchedEffect(c.lanPaired){if(c.lanPaired){entering=false;input=""}}
+    Text("多设备同步",fontWeight=FontWeight.Bold)
+    Text(if(c.lanPaired||c.lanStatus!="尚未配对")c.lanStatus else "配对一次后，两台设备同时打开日记并连接同一局域网时自动同步。首次同步历史较多时需要稍等。",fontSize=13.sp,color=Muted)
+    if(c.lanPaired)Text("日记打开时自动同步；AM++ 采集器运行时也会尝试后台同步。",fontSize=12.sp,color=Muted)
+    if(c.lanPaired){
+        Row(verticalAlignment=Alignment.CenterVertically){Text("本机：${c.lanName}",Modifier.weight(1f),fontSize=13.sp,color=Muted);TextButton(onClick={editedName=c.lanName;rename=true}){Text("修改名称")}}
+        val synced=c.lanDevices.filter{it.lastSync>0}
+        if(synced.isNotEmpty())Text("已同步设备："+synced.joinToString("、"){it.name},fontSize=13.sp,color=Muted)
+        val pending=c.lanDevices.filter{it.lastSync<=0}
+        if(pending.isNotEmpty())Text("同步组设备："+pending.joinToString("、"){it.name}+"（等待首次直接同步）",fontSize=13.sp,color=Muted)
+        if(c.lanManualAddress.isNotEmpty())Row(verticalAlignment=Alignment.CenterVertically){Text("连接地址：${c.lanManualAddress}",Modifier.weight(1f),fontSize=12.sp,color=Muted);TextButton(onClick={editedAddress=c.lanManualAddress;editAddress=true}){Text("修改地址")}}
+    }
+    if(c.lanCode!=null){
+        Text("在另一台设备输入配对码，保持此页面打开。配对码两分钟内有效。",fontSize=13.sp,color=Muted)
+        val addresses=remember(c.lanCode){c.lanAddresses()}
+        if(addresses.isNotEmpty())Text("本机地址："+addresses.joinToString("、"),fontSize=12.sp,color=Muted)
+        androidx.compose.foundation.text.selection.SelectionContainer{Text(c.lanCode!!,fontSize=14.sp)}
+        OutlinedButton(onClick={val clipboard=c.activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager;clipboard.setPrimaryClip(android.content.ClipData.newPlainText("听歌日记配对码",c.lanCode!!))},modifier=Modifier.fillMaxWidth()){Text("复制配对码")}
+        OutlinedButton(onClick={c.lanHideCode()},modifier=Modifier.fillMaxWidth()){Text("完成")}
+    }else if(entering){
+        OutlinedTextField(value=input,onValueChange={input=it},modifier=Modifier.fillMaxWidth(),label={Text("输入另一台设备的配对码")},singleLine=true)
+        OutlinedTextField(value=address,onValueChange={address=it},modifier=Modifier.fillMaxWidth(),label={Text("对方局域网 IP（虚拟网卡可用）")},singleLine=true)
+        Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+            Button(onClick={c.lanJoin(input,address);if(c.lanPaired){entering=false;input="";address=""}}){Text("配对")}
+            TextButton(onClick={entering=false;input=""}){Text("取消")}
+        }
+    }else{
+        OutlinedButton(onClick={c.lanCreateCode()},modifier=Modifier.fillMaxWidth()){Text(if(c.lanPaired)"显示配对码" else "生成配对码")}
+        if(!c.lanPaired)OutlinedButton(onClick={entering=true},modifier=Modifier.fillMaxWidth()){Text("输入配对码")}
+        if(c.lanPaired&&c.lanStatus.contains("权限"))OutlinedButton(onClick={c.lanEnable()},modifier=Modifier.fillMaxWidth()){Text("开启局域网权限")}
+        if(c.lanPaired)TextButton(onClick={confirmUnpair=true}){Text("让本机退出同步组")}
+    }
+    if(confirmUnpair)AlertDialog(onDismissRequest={confirmUnpair=false},title={Text("退出同步组？")},text={Text("仅本机退出并停止自动同步，已有听歌记录会保留；组内其他设备仍会互相同步。")},confirmButton={TextButton(onClick={c.lanUnpair();confirmUnpair=false}){Text("让本机退出")}},dismissButton={TextButton(onClick={confirmUnpair=false}){Text("取消")}})
+    if(rename)AlertDialog(onDismissRequest={rename=false},title={Text("本机名称")},text={OutlinedTextField(value=editedName,onValueChange={editedName=it.take(48)},singleLine=true,label={Text("其他设备看到的名称")})},confirmButton={TextButton(onClick={if(editedName.isNotBlank()){c.lanRename(editedName);rename=false}}){Text("保存")}},dismissButton={TextButton(onClick={rename=false}){Text("取消")}})
+    if(editAddress)AlertDialog(onDismissRequest={editAddress=false},title={Text("修改连接地址")},text={OutlinedTextField(value=editedAddress,onValueChange={editedAddress=it.take(15)},singleLine=true,label={Text("对方局域网 IPv4 地址")})},confirmButton={TextButton(onClick={if(c.lanManualAddress(editedAddress))editAddress=false}){Text("保存")}},dismissButton={TextButton(onClick={editAddress=false}){Text("取消")}})
 }
 
 @Composable private fun PeriodLoadingPage(c:DiaryController,b:Backdrop,period:DiaryRange,calendar:()->Unit,settings:()->Unit){
@@ -307,9 +355,11 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         val dragIndex=c.periodSwipePosition?.let{position->if(position>c.range.ordinal+.001f)c.range.ordinal+1 else if(position<c.range.ordinal-.001f)c.range.ordinal-1 else c.range.ordinal}?.takeIf{it in 0..3}
         val prepared=remember(c.day,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch){c.activePreparedPeriods()}
         val canWarm=c.periodSwipePosition==null
-        LaunchedEffect(c.day,c.range,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch,c.loading,c.foreground,canWarm){
-            if(!c.loading&&canWarm&&(c.foreground||c.demo)){
-                delay(150)
+        LaunchedEffect(c.day,c.range,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch,c.loading,c.foreground,c.syncing,canWarm){
+            if(!c.loading&&canWarm&&(c.foreground||c.demo)&&(c.demo||!c.syncing)){
+                // A cached home report can be visible before the initial collector batch arrives.
+                // Do not let speculative period warming monopolize the shared DB at startup.
+                delay(if(c.demo)150 else 5000)
                 val range=c.range;val day=c.day;val revision=c.dataRevision;val policy=c.dayPolicy;val metadataEpoch=c.previewMetadataEpoch
                 // Keep already prepared periods and look ahead beyond the immediate neighbor.
                 val neighbors=DiaryRange.entries.filter{it!=range}.sortedWith(compareBy<DiaryRange>{kotlin.math.abs(it.ordinal-range.ordinal)}.thenByDescending{it.ordinal})
@@ -325,7 +375,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
                             continue
                         }
                     }
-                    val loaded=if(c.demo)periodDemoReport(day,next) to revision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DiaryDatabase.get(c.activity).readReportVersioned(bounds(day,next),policy)}
+                    val loaded=if(c.demo)periodDemoReport(day,next) to revision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(day,next),policy)}
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if(loaded.second!=revision||!c.isPreviewRevisionCurrent(revision)||loaded.first.segments.size>80000)continue
                     val distance=kotlin.math.abs(next.ordinal-range.ordinal)
@@ -356,7 +406,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
                 val next=DiaryRange.entries[dragIndex]
                 if(prepared[next]?.let{c.isPreviewRevisionCurrent(it.revision)}!=true){
                     previewReport=null;previewComputed=null;previewRange=next
-                    val loaded=if(c.demo)periodDemoReport(c.day,next) to c.dataRevision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DiaryDatabase.get(c.activity).readReportVersioned(bounds(c.day,next),c.dayPolicy)}
+                    val loaded=if(c.demo)periodDemoReport(c.day,next) to c.dataRevision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(c.day,next),c.dayPolicy)}
                     val calculated=if(next==DiaryRange.DAY)null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){computePeriod(loaded.first,c.day,next)}
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if(c.isPreviewRevisionCurrent(loaded.second)){previewRevision=loaded.second;previewComputed=calculated;previewReport=loaded.first}
@@ -381,12 +431,12 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         val dragRange=dragIndex?.let{DiaryRange.entries[it]}
         val dragCached=dragRange?.let{prepared[it]}?.takeIf{c.isPreviewRevisionCurrent(it.revision)}
         val dragReady=dragRange==null||dragCached!=null||(previewRange==dragRange&&previewReport!=null&&c.isPreviewRevisionCurrent(previewRevision)&&(dragRange==DiaryRange.DAY||previewComputed?.report===previewReport))
-        val periodDragPosition=c.periodSwipePosition?.takeIf{dragIndex!=null&&dragIndex!=c.range.ordinal}
+        val periodDragPosition=c.periodSwipePosition?.takeIf{it in 0f..3f}
         LaunchedEffect(c.range,periodDragPosition,selectedReady,dragReady){
             val pos=periodDragPosition
             if(pos!=null&&dragIndex!=null&&dragIndex!=c.range.ordinal){
                 periodState.seekTo(kotlin.math.abs(pos-c.range.ordinal).coerceIn(0f,1f),DiaryRange.entries[dragIndex])
-            }else periodState.animateTo(c.range)
+            }else if(pos!=null)periodState.snapTo(c.range) else periodState.animateTo(c.range)
         }
         periodTransition.AnimatedContent(modifier=Modifier.periodSwipe(c).testTag("period-navigation").semantics{this[PeriodSeekFractionKey]=periodState.fraction;this[PreparedPeriodsKey]=prepared.entries.sortedBy{it.key.ordinal}.joinToString(","){it.key.name+":"+it.value.report.from}},transitionSpec={
             val forward=targetState.ordinal>initialState.ordinal

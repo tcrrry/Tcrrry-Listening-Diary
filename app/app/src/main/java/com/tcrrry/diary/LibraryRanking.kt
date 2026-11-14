@@ -42,7 +42,7 @@ internal fun libraryAlbumGroups(albums:List<AlbumStat>):List<LibraryGroup> = alb
         if(c.summary||c.range==DiaryRange.DAY){value=null;return@produceState}
         value=null
         try{
-            val previous=if(c.demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(c.day,c.range,-1),c.range)}else withContext(Dispatchers.IO){DiaryDatabase.get(c.activity).readReportVersioned(bounds(periodShift(c.day,c.range,-1),c.range),c.dayPolicy).first}
+            val previous=if(c.demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(c.day,c.range,-1),c.range)}else withContext(Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(periodShift(c.day,c.range,-1),c.range),c.dayPolicy).first}
             value=withContext(Dispatchers.Default){
                 val scoped=if(artistFilter==null)previous else previous.copy(history=previous.history.filter{it.artist==artistFilter},segments=previous.segments.filter{it.artist==artistFilter})
                 val oldSongs=sortedPlays(scoped.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT).mapIndexed{i,p->p.id to i+1}.toMap()

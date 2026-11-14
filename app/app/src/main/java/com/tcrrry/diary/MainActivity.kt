@@ -19,6 +19,16 @@ class MainActivity : ComponentActivity() {
     private val import = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) controller.importJson(uri) }
     private val appleImport = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) controller.stageApple(uri) }
     private val export = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri -> if (uri != null) controller.exportJson(uri) }
+    private var pendingLanAction:(()->Unit)?=null
+    private val lanPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()){granted->
+        val action=pendingLanAction;pendingLanAction=null
+        if(granted)action?.invoke() else if(::controller.isInitialized)controller.lanPermissionDenied()
+    }
+    internal fun withLanPermission(action:()->Unit){
+        val permission="android.permission.ACCESS_LOCAL_NETWORK"
+        if(Build.VERSION.SDK_INT<37 || checkSelfPermission(permission)==android.content.pm.PackageManager.PERMISSION_GRANTED)action()
+        else{pendingLanAction=action;lanPermission.launch(permission)}
+    }
 
     private fun applyHighRefreshRate() {
         runCatching {

@@ -92,7 +92,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                 val candidates=r.history.filter{!it.imported||it.title!="未知歌曲"}
                 Triple(candidates,candidates.map{it.id}.toSet(),candidates.map{it.artist}.filter{it.isNotBlank()&&it!="未知歌手"}.toSet())
             }
-            val discovered=if(c.demo)ids to artists else withContext(Dispatchers.IO){DiaryDatabase.get(c.activity).periodNewIdentities(c.day,range,c.dayPolicy,ids,artists)}
+            val discovered=if(c.demo)ids to artists else withContext(Dispatchers.IO){DiaryDatabase.projection(c.activity).periodNewIdentities(c.day,range,c.dayPolicy,ids,artists)}
             value=withContext(Dispatchers.Default){
                 val songs=sortedPlays(candidates.filter{it.id in discovered.first},SortOrder.COUNT)
                 val groups=artistWeekGroups(r).filter{it.title in discovered.second}

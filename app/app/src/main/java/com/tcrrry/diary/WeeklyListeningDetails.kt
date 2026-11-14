@@ -34,7 +34,7 @@ internal data class WeeklyDetailUi(val target:WeeklyTarget,val stats:WeeklyListe
         value=WeekComparison()
         if(c.summary)return@produceState
         try{
-            val previous=if(demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(day,range,-1),range)}else withContext(Dispatchers.IO){DiaryDatabase.get(c.activity).readReportVersioned(bounds(periodShift(day,range,-1),range),policy).first}
+            val previous=if(demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(day,range,-1),range)}else withContext(Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(periodShift(day,range,-1),range),policy).first}
             value=withContext(Dispatchers.Default){
                 val plays=previous.history.filter{target.matches(it)}
                 val total=previous.history.sumOf{it.ms}
@@ -73,7 +73,7 @@ internal data class WeeklyDetailUi(val target:WeeklyTarget,val stats:WeeklyListe
     val newIds by produceState<Set<String>>(emptySet(),report,target,day,range,policy,demo,revision){
         if(!target.artist||c.summary)return@produceState
         val ids=report.history.filter{target.matches(it)}.map{it.id}.toSet()
-        value=try{if(demo)ids else withContext(Dispatchers.IO){DiaryDatabase.get(c.activity).periodNewIdentities(day,range,policy,ids,setOf(target.play.artist)).first}}catch(e:CancellationException){throw e}catch(_:Exception){emptySet()}
+        value=try{if(demo)ids else withContext(Dispatchers.IO){DiaryDatabase.projection(c.activity).periodNewIdentities(day,range,policy,ids,setOf(target.play.artist)).first}}catch(e:CancellationException){throw e}catch(_:Exception){emptySet()}
     }
     return WeeklyDetailUi(target,stats,comparison,catalog,retry={requestEpoch++},tracks=tracks,newSongIds=newIds)
 }

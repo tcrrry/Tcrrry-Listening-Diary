@@ -22,6 +22,7 @@ internal class CollectorLink(private val context:Context,private val scope:Corou
     private var observedSerial=serial()
     var syncing by mutableStateOf(false);private set
     var status by mutableStateOf<String?>(null);private set
+    var lastSync by mutableLongStateOf(prefs.getLong("last_sync",0L));private set
     private fun serial()=prefs.getLong("sync_serial",0)
     private fun send(){
         BridgeIdentity.restoreAccess(context)
@@ -30,6 +31,7 @@ internal class CollectorLink(private val context:Context,private val scope:Corou
     }
     fun received(){
         val now=serial()
+        lastSync=prefs.getLong("last_sync",lastSync)
         if(now==observedSerial||now==awaiting)return
         observedSerial=now
         awaiting=null;status="已收到采集器更新";syncing=false
@@ -58,7 +60,7 @@ internal class CollectorLink(private val context:Context,private val scope:Corou
                 approve();send()
                 repeat((WAIT_MS/500).toInt()){step->
                     delay(500)
-                    if(serial()!=before){status="已收到采集器更新";changed();return@launch}
+                    if(serial()!=before){lastSync=prefs.getLong("last_sync",lastSync);status="已收到采集器更新";changed();return@launch}
                     // A receiver may still be registering as AM++ resumes. Retry only this bounded foreground request.
                     if(step==3||step==11)send()
                 }

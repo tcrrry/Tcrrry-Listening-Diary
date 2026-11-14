@@ -4,7 +4,7 @@ val signing = Properties().apply { rootProject.file(".private/signing.properties
 android {
     namespace = "com.tcrrry.diary"
     compileSdk = 37
-    defaultConfig { applicationId = "com.tcrrry.listeningdiary.app"; minSdk = 31; targetSdk = 37; versionCode = 141; versionName = "1.0" }
+    defaultConfig { applicationId = "com.tcrrry.listeningdiary.app"; minSdk = 31; targetSdk = 37; versionCode = 156; versionName = "1.1" }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     // The published source never contains the release signing key. Debug builds use the standard debug key;

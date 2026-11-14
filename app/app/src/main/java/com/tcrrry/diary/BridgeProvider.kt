@@ -27,12 +27,13 @@ class BridgeProvider:ContentProvider() {
         val packages=c.packageManager.getPackagesForUid(uid).orEmpty()
         if(!packages.contains(BridgeIdentity.HOST))throw SecurityException("Only the approved AM++ host can provide records")
         val approved=BridgeIdentity.approved(c)
-        if(method=="hello")return Bundle().apply{putBoolean("approved",approved);putInt("eventSupport",1);putString("generation",DiaryDatabase.get(c).generation);if(approved)putString("neededArt",DiaryDatabase.get(c).neededArtwork())}
+        if(method=="hello"){val started=SystemClock.elapsedRealtime();return Bundle().apply{putBoolean("approved",approved);putInt("eventSupport",1);putString("generation",DiaryDatabase.get(c).generation);if(approved)putString("neededArt",DiaryDatabase.get(c).neededArtwork());android.util.Log.i("DiaryTiming","provider hello elapsed=${SystemClock.elapsedRealtime()-started}ms")}}
         if(!approved)throw SecurityException("Open Diary and approve this AM++ installation first")
         require(method=="upsert"){"Unknown method"}
         val payload=extras?.getString("payload")?:throw IllegalArgumentException("Missing batch")
         require(payload.toByteArray(Charsets.UTF_8).size<=380000){"Batch too large"}
-        val count=DiaryDatabase.get(c).ingest(JSONObject(payload))
+        val started=SystemClock.elapsedRealtime();val data=JSONObject(payload);val count=DiaryDatabase.get(c).ingest(data);android.util.Log.i("DiaryTiming","provider upsert rows=$count elapsed=${SystemClock.elapsedRealtime()-started}ms")
+        if(data.optString("status")!="记录已关闭")LanForegroundSync.shared(c).collectorHeartbeat()
         c.contentResolver.notifyChange(BridgeIdentity.URI,null)
         return Bundle().apply{putBoolean("accepted",true);putInt("rows",count)}
     }

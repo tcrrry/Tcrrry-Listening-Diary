@@ -20,6 +20,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -211,7 +212,8 @@ private data class ListeningSummaryStats(val first:Play?,val hours:List<Long>,va
             val previousDay=periodShift(c.day,range,-1)
             val comparisonBounds=periodSummaryComparisonBounds(c.day,c.currentListeningDay(),range)
             if(!c.demo){val cached=withContext(Dispatchers.IO){DailyDurationCache.read(c.activity,c.dayPolicy,comparisonBounds)};if(cached!=null)value=cached to true}
-            val previousMs=if(c.demo)withContext(Dispatchers.Default){val report=periodDemoReport(previousDay,range);if(range!=DiaryRange.DAY)report.dayTotals.filterKeys{it>=comparisonBounds.from&&it<=comparisonBounds.to}.values.sum() else report.ms}else withContext(Dispatchers.IO){PeriodDurationReader.read(c.activity,comparisonBounds,c.dayPolicy)?:DiaryDatabase.get(c.activity).durationForBounds(comparisonBounds,c.dayPolicy)}
+            if(!c.demo&&c.syncing)kotlinx.coroutines.withTimeoutOrNull(8000){snapshotFlow{c.syncing}.first{!it}}
+            val previousMs=if(c.demo)withContext(Dispatchers.Default){val report=periodDemoReport(previousDay,range);if(range!=DiaryRange.DAY)report.dayTotals.filterKeys{it>=comparisonBounds.from&&it<=comparisonBounds.to}.values.sum() else report.ms}else withContext(Dispatchers.IO){PeriodDurationReader.read(c.activity,comparisonBounds,c.dayPolicy)?:DiaryDatabase.projection(c.activity).durationForBounds(comparisonBounds,c.dayPolicy)}
             value=previousMs to false
         }catch(e:kotlinx.coroutines.CancellationException){throw e}catch(_:Exception){value=null to false}
     }}
