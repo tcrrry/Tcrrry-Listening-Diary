@@ -4,18 +4,24 @@
 
 把音乐留在日记里。听歌日记由 Android App 和 **AM++ 采集插件**组成：插件在 AM++ 运行时采集 Apple Music 的播放记录，App 在本机展示听歌历史、统计、偏好与分享图片。
 
-## 下载 v1.1
+## 下载 v1.2
 
-[![下载听歌日记 APK](docs/download-app.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.1/Listening-Diary-v1.1.apk)
+[![下载听歌日记 APK](docs/download-app.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.2/Listening-Diary-v1.2.apk)
 [![下载 AM++ 采集器 ZIP](docs/download-collector.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.0/Listening-Diary-Collector-v1.0.zip)
 
-[查看发布页与更新说明](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.1) · [获取 AM++ 整合安装包](https://github.com/tcrrry/AMPP-Lyrics)
+[查看发布页与更新说明](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.2) · [获取 AM++ 整合安装包](https://github.com/tcrrry/AMPP-Lyrics)
 
 **两份文件都需要**：APK 是独立的日记 App；ZIP 是导入 AM++ 插件管理器的采集插件，不是 APK。已安装 AM++ 的用户无需再次安装整合包。App 要求 Android 12 或更高版本。
 
+## v1.2 更新
+
+- 歌曲、专辑和歌手详情可跳转 Apple Music；歌曲及专辑页面的歌手入口仍可进入日记内的歌手详情。专辑首次匹配可能需要联网，结果会缓存在本机。
+- 设置中可调整有效播放门槛为 0～60 秒，也可选择不限时长；修改后按新规则重新计算历史统计，实际收听时长不变。短歌达到时长的一半也计入。
+- 设置底部可检查 GitHub 正式版更新，支持自动提醒、稍后一天提醒、忽略当前版本和关闭自动提醒；手动检查不受影响。
+
 ## 安装与更新
 
-1. 安装或覆盖安装 `Listening-Diary-v1.1.apk`，打开日记，在设置中连接 AM++ 采集器并授权。
+1. 安装或覆盖安装 `Listening-Diary-v1.2.apk`，打开日记，在设置中连接 AM++ 采集器并授权。
 2. 打开 AM++ 的插件管理器，导入 `Listening-Diary-Collector-v1.0.zip` 并启用；如宿主提示重启，请重新打开 AM++。
 3. 正常播放歌曲后打开日记查看。插件在 AM++ 运行时记录，App 不需要一直打开；首次同步或补传旧记录可能需要一点时间。
 

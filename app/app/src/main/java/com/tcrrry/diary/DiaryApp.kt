@@ -155,6 +155,10 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
     SideEffect{val appearance=android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;c.activity.window.insetsController?.setSystemBarsAppearance(if(dark)0 else appearance,appearance);c.activity.window.statusBarColor=android.graphics.Color.TRANSPARENT;c.activity.window.navigationBarColor=scheme.background.toArgb()}
     MaterialTheme(colorScheme=scheme){
         CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface,LocalDiaryFont provides font,LocalAMTypeface provides c.amTypeface){
+        val updateScope=rememberCoroutineScope()
+        val updates=remember(c.activity){DiaryUpdateChecker(c.activity,updateScope){c.foreground}}
+        LaunchedEffect(c.foreground){if(c.foreground){delay(4000);updates.check(false)}}
+        DiaryUpdateDialog(updates)
         val backdrop=rememberLayerBackdrop();var settings by rememberSaveable{mutableStateOf(false)};var calendar by rememberSaveable{mutableStateOf(false)};var shareImages by rememberSaveable{mutableStateOf(false)}
         val timeline=remember{MusicTimelineState()}
         var selection by remember{mutableStateOf<Selection?>(null)};val selectionStack=remember{mutableStateListOf<Selection>()}
@@ -225,6 +229,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
                 Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text("歌手图片",fontSize=16.sp);Text("自动获取 Apple Music 艺人头像",fontSize=12.sp,color=Muted)};Switch(modifier=Modifier.testTag("global-artist-photos"),checked=c.artistPhotosEnabled,onCheckedChange={c.artistPhotos(it)})}
                 Row(verticalAlignment=Alignment.CenterVertically){Column(Modifier.weight(1f)){Text("12小时制");Text("以上午、下午显示时间",fontSize=12.sp,color=Muted)};Switch(modifier=Modifier.testTag("clock-12-hour"),checked=c.use12Hour,onCheckedChange={c.use12Hour(it)})}
                 ListeningDaySettings(c)
+                EffectivePlaySettings(c)
                 HorizontalDivider(color=Color.White.copy(alpha=.1f))
                 Text("导入历史",fontWeight=FontWeight.Bold)
                 AppleImportSettings(c,onAppleImport)
@@ -237,8 +242,10 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
                 Text("用于迁移或恢复日记：导入旧插件或日记 JSON 备份，或导出完整日记备份。",fontSize=12.sp,color=Muted)
                 OutlinedButton(onClick=onImport,modifier=Modifier.fillMaxWidth()){Text("导入插件或日记 JSON 备份")}
                 OutlinedButton(onClick=onExport,modifier=Modifier.fillMaxWidth()){Text("导出完整日记备份")}
-                Text("记录不会自动过期。图片缓存上限 100 MB，可重新获取。有效播放：至少 30 秒，短歌为一半时长；分钟数只计算实际播放时间。",color=Muted,fontSize=12.sp)
+                Text("记录不会自动过期。图片缓存上限 100 MB，可重新获取；分钟数只计算实际播放时间。",color=Muted,fontSize=12.sp)
                 OutlinedButton(onClick={settings=false;shareImages=true},modifier=Modifier.fillMaxWidth().testTag("open-share-images")){Text("生成分享图片")}
+                HorizontalDivider(color=Color.White.copy(alpha=.1f))
+                DiaryUpdateSettings(updates)
                 Spacer(Modifier.height(30.dp))
             }
         }
@@ -246,6 +253,17 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
     }
 }
 
+}
+
+@Composable private fun EffectivePlaySettings(c:DiaryController){
+    var seconds by remember(c.effectiveSeconds){mutableFloatStateOf(c.effectiveSeconds.toFloat())}
+    Column {
+        Text("有效播放门槛",fontSize=16.sp)
+        Text(if(seconds.toInt()==0)"不限时长 · 每次切歌都计入" else "至少听 ${seconds.toInt()} 秒",fontSize=13.sp,color=Accent)
+        FilterChip(selected=seconds.toInt()==0,onClick={seconds=0f;c.effectiveSeconds(0)},label={Text("不限时长，全部计入")},modifier=Modifier.testTag("effective-all-plays"))
+        Slider(value=seconds,onValueChange={seconds=it},onValueChangeFinished={c.effectiveSeconds(seconds.roundToInt())},valueRange=0f..60f,steps=59,modifier=Modifier.testTag("effective-seconds-slider"))
+        Text("0 秒表示不限时长；短歌曲达到歌曲时长的一半也会计入。更改后会重新计算历史统计。",fontSize=12.sp,color=Muted)
+    }
 }
 
 @Composable private fun LanSyncSettings(c:DiaryController){
@@ -794,6 +812,13 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
     }
 }
 
+@Composable private fun AppleLinkTitle(label:String,size:Int,modifier:Modifier=Modifier,color:Color=Color.Unspecified,open:()->Unit){
+    Row(modifier.press(open),verticalAlignment=Alignment.CenterVertically){
+        Text(label,Modifier.weight(1f,fill=false),color=color,fontSize=size.sp,fontWeight=if(size>=30)FontWeight.Bold else FontWeight.Medium)
+        DiaryGlyph("next",Modifier.padding(start=4.dp).size(12.dp),color=if(color==Color.Unspecified) Muted.copy(alpha=.8f) else color.copy(alpha=.7f))
+    }
+}
+
 @Composable private fun Detail(c:DiaryController,s:Selection,b:Backdrop,back:()->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope,onTint:(List<Color>)->Unit){
     BackHandler(enabled=visibility.transition.targetState==EnterExitState.Visible) { back() }
     if(s.artist!=null || s.album!=null){MusicGroupDetail(c,s,back,shared,visibility,onTint);return}
@@ -806,7 +831,7 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding().testTag("song-detail"),contentPadding=PaddingValues(25.dp),verticalArrangement=Arrangement.spacedBy(if(dayOnly)8.dp else 24.dp)){
         item{Row(Modifier.press(back).semantics{contentDescription="返回日记"}.padding(vertical=12.dp),verticalAlignment=Alignment.CenterVertically){DiaryGlyph("back",Modifier.size(24.dp),color=Accent);Text("返回日记",color=Accent,fontSize=17.sp)}}
         item{with(shared){Artwork(c,p.id,Modifier.fillMaxWidth().aspectRatio(1f).detailSource(s.key,shape=RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)),onTint=onTint,edge=1200)}}
-        item{Column(verticalArrangement=Arrangement.spacedBy(10.dp)){Text(p.title,fontSize=30.sp,fontWeight=FontWeight.Bold);Text(p.artist,color=Accent,fontSize=18.sp);Text(if(!c.summary&&p.album.isNotBlank())"${p.album} ›"else p.album,Modifier.then(if(!c.summary&&p.album.isNotBlank()&&actions!=null)Modifier.testTag("weekly-open-album").press{actions.album(p,"weekly-album-link:${p.id}")}else Modifier),color=Muted,fontSize=14.sp)}}
+        item{Column(verticalArrangement=Arrangement.spacedBy(10.dp)){AppleLinkTitle(p.title,30,Modifier.testTag("apple-song-link")){openAppleMusic(c,"song",p,p.title)};AppleLinkTitle(p.artist,18,Modifier.testTag("song-open-artist"),Accent){actions?.artist?.invoke(p.artist,"song-artist:${p.id}")};Text(if(!c.summary&&p.album.isNotBlank())"${p.album} ›"else p.album,Modifier.then(if(!c.summary&&p.album.isNotBlank()&&actions!=null)Modifier.testTag("weekly-open-album").press{actions.album(p,"weekly-album-link:${p.id}")}else Modifier),color=Muted,fontSize=14.sp)}}
         item{Row(Modifier.fillMaxWidth().then(glass(b)).padding(23.dp),horizontalArrangement=Arrangement.SpaceBetween){Metric(duration(totals.first),if(c.summary)"全部实际聆听" else if(weekly!=null)"${detailPeriodName(c.range)}实际聆听"else "本期实际聆听",Accent);Metric("${totals.second}","有效播放",Pink)}}
         if(!dayOnly){
             val label=latestDeviceLabel(detailReport.segments.filter{it.id==p.id})
@@ -859,7 +884,7 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding().testTag("music-group-detail"),contentPadding=PaddingValues(25.dp),verticalArrangement=Arrangement.spacedBy(if(dayOnly&&artist==null)8.dp else if(dayOnly)14.dp else 20.dp)){
         item{Row(Modifier.press(back).semantics{contentDescription="返回日记"}.padding(vertical=12.dp),verticalAlignment=Alignment.CenterVertically){DiaryGlyph("back",Modifier.size(24.dp),color=Accent);Text("返回日记",color=Accent,fontSize=17.sp)}}
         item{with(shared){Artwork(c,if(artist!=null)"artist:$artist" else s.play.id,Modifier.fillMaxWidth().aspectRatio(1f).detailSource(s.key,shape=RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)),onTint=onTint,edge=1200)}}
-        item{Text(artist?:albumTitle.orEmpty(),fontSize=30.sp,fontWeight=FontWeight.Bold);if(artist==null)Text(albumArtist,color=Muted,fontSize=16.sp);Text(songSummary,Modifier.padding(top=8.dp),fontSize=14.sp,color=Muted);if(c.summary&&artist==null){val album=c.summaryFacts.albums.find{it.title==s.album&&it.artist==s.play.artist};album?.let{albumCoverage(it,c.catalogFacts)}?.let{(heard,total)->Text("已听${heard}/${total}首",Modifier.padding(top=8.dp),fontSize=14.sp,color=Muted)}}}
+        item{AppleLinkTitle(artist?:albumTitle.orEmpty(),30,Modifier.testTag("apple-group-link")){openAppleMusic(c,if(artist!=null)"artist" else "album",s.play,artist?:albumTitle.orEmpty())};if(artist==null)AppleLinkTitle(albumArtist,16,Modifier.testTag("album-open-artist"),Muted){actions?.artist?.invoke(albumArtist,"album-artist:${s.play.id}")};Text(songSummary,Modifier.padding(top=8.dp),fontSize=14.sp,color=Muted);if(c.summary&&artist==null){val album=c.summaryFacts.albums.find{it.title==s.album&&it.artist==s.play.artist};album?.let{albumCoverage(it,c.catalogFacts)}?.let{(heard,total)->Text("已听${heard}/${total}首",Modifier.padding(top=8.dp),fontSize=14.sp,color=Muted)}}}
         if(artist!=null&&c.summary){
             item { ArtistPreferenceTrajectoryCard(c, c.summaryFacts, artist) }
         }

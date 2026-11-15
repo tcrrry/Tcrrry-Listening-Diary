@@ -4,7 +4,10 @@ import java.util.*;
 
 /** Order is presentation only: never rewrites the ledger or deduplicates its visits. */
 final class DailyRows {
-    static long effective(long ms,long duration){return ms>=Math.min(30000,duration>0?Math.max(1,duration/2):30000)?1:0;}
+    private static volatile int thresholdSeconds=30;
+    static void threshold(int seconds){thresholdSeconds=Math.max(0,Math.min(60,seconds));}
+    static int threshold(){return thresholdSeconds;}
+    static long effective(long ms,long duration){long minimum=thresholdSeconds*1000L;return ms>=Math.min(minimum,duration>0?Math.max(1,duration/2):minimum)?1:0;}
     static List<JSONObject> order(JSONArray source,String mode)throws JSONException{
         List<JSONObject> rows=new ArrayList<>();boolean grouped="count".equals(mode)||"duration".equals(mode);Map<String,JSONObject> songs=new LinkedHashMap<>();
         for(int i=0;i<source.length();i++){JSONObject raw=source.getJSONObject(i);long play=effective(raw.optLong("ms"),raw.optLong("duration"));JSONObject s=new JSONObject(raw.toString()).put("plays",play).put("occurrences",1).put("grouped",grouped);

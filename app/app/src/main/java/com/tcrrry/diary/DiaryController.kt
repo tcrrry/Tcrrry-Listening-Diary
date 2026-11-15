@@ -83,6 +83,21 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
     var amTypeface by mutableStateOf<android.graphics.Typeface?>(null);private set
     private var fontJob:Job?=null
     private val prefs=activity.getSharedPreferences("diary",Context.MODE_PRIVATE)
+    var effectiveSeconds by mutableIntStateOf(prefs.getInt("effective_seconds",30).coerceIn(0,60));private set
+    init { DailyRows.threshold(effectiveSeconds) }
+    fun effectiveSeconds(value:Int){
+        val seconds=value.coerceIn(0,60)
+        if(seconds==effectiveSeconds)return
+        effectiveSeconds=seconds
+        job?.cancel();summaryPreloadJob?.cancel();summaryJob?.cancel();summaryMetadataJob?.cancel();summaryDiskTask?.cancel()
+        scope.launch {
+            withContext(Dispatchers.IO){DiaryDatabase.get(activity).setEffectiveThreshold(seconds)}
+            dataRevision=prefs.getLong("data_revision",dataRevision)
+            preparedPeriods.clear();summaryStamp=null;summaryDiskTask=null;summaryDiskKey=null
+            summaryFacts=SummaryFacts(DiaryReport());report=DiaryReport();retainedPeriodComputed=null
+            refresh(false)
+        }
+    }
     internal var dataRevision by mutableLongStateOf(prefs.getLong("data_revision",0L));private set
     internal var previewMetadataEpoch by mutableLongStateOf(0L);private set
     internal fun isPreviewRevisionCurrent(revision:Long)=demo||prefs.getLong("data_revision",0L)==revision

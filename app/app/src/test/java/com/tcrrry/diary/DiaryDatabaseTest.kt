@@ -15,6 +15,24 @@ class DiaryDatabaseTest {
     @Before fun setup(){val c=RuntimeEnvironment.getApplication();val f=DiaryDatabase::class.java.getDeclaredField("instance");f.isAccessible=true;val old=f.get(null);if(old!=null){val d=DiaryDatabase::class.java.getDeclaredField("db");d.isAccessible=true;(d.get(old) as android.database.sqlite.SQLiteDatabase).close()};f.set(null,null);c.deleteDatabase("diary.db");java.io.File(c.filesDir,"diary.db").delete();java.io.File(c.filesDir,"diary.db-wal").delete();java.io.File(c.filesDir,"diary.db-shm").delete();c.getSharedPreferences("diary",Context.MODE_PRIVATE).edit().clear().commit();db=DiaryDatabase.get(c)}
     private fun payload(id:Long=1,ms:Long=30000,source:String="phone"):JSONObject {val start=day.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();return JSONObject().put("sourceId",source).put("tracks",JSONArray().put(JSONObject().put("id","song").put("title","歌曲").put("artist","歌手").put("album","专辑").put("duration",240000))).put("spans",JSONArray().put(JSONObject().put("id",id).put("visit","v$id").put("track","song").put("day",day.toString()).put("zone","UTC").put("start",start).put("end",start+ms).put("ms",ms)))}
     private fun report()=db.report(day,DiaryRange.DAY).toReport()
+    @Test fun thresholdChangesRecalculateHistoryAndInvalidateCachedReports(){
+        db.ingest(payload(ms=10000))
+        val c=RuntimeEnvironment.getApplication();val policy=ListeningDayPolicy();val bound=bounds(day,DiaryRange.DAY)
+        val before=db.readReportVersioned(bound,policy)
+        assertEquals(0,before.first.plays)
+        DailyReportCache.write(c,day,policy,before.first,before.second)
+        assertNotNull(DailyReportCache.read(c,day,policy))
+        db.setEffectiveThreshold(0)
+        assertNull(DailyReportCache.read(c,day,policy))
+        assertEquals(1,db.readReport(bound,policy).plays)
+        assertEquals(1,db.report(day,DiaryRange.DAY).toReport().plays)
+        assertEquals(10000L,db.readReport(bound,policy).ms)
+        db.setEffectiveThreshold(60)
+        assertEquals(0,db.readReport(bound,policy).plays)
+        assertEquals(0,db.report(day,DiaryRange.DAY).toReport().plays)
+        assertEquals(1L,DailyRows.effective(10000,20000))
+        assertEquals(0L,DailyRows.effective(9999,20000))
+    }
     @Test fun overlappingPlaysFromDifferentSourcesRemainDistinctAndReplayIsIdempotent(){
         db.ingest(payload(id=1,ms=30000,source="phone"))
         db.ingest(payload(id=1,ms=30000,source="tablet"))

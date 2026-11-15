@@ -23,6 +23,7 @@ fun bounds(day:LocalDate,range:DiaryRange):DayBounds=when(range){
 class DiaryDatabase private constructor(private val context:Context,private val projectionOnly:Boolean=false) {
     val images=java.io.File(context.filesDir,"art").apply{mkdirs()}
     private val preferences=context.getSharedPreferences("diary",Context.MODE_PRIVATE)
+    init { DailyRows.threshold(preferences.getInt("effective_seconds",30)) }
     val generation:String=preferences.getString("generation",null)?:UUID.randomUUID().toString().also{preferences.edit().putString("generation",it).commit()}
     private val db=SQLiteDatabase.openOrCreateDatabase(java.io.File(context.filesDir,"diary.db"),null).apply {
         enableWriteAheadLogging()
@@ -57,6 +58,13 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         nativeCatalogVersion=preferences.getLong("catalog_revision",0L)
     }
     private fun bumpRevision(invalidateCache:Boolean=false){revision++;val edit=preferences.edit().putLong("data_revision",revision);if(invalidateCache)edit.putLong("cache_epoch",preferences.getLong("cache_epoch",0L)+1);edit.commit()}
+    @Synchronized internal fun setEffectiveThreshold(seconds:Int) {
+        check(!projectionOnly)
+        val value=seconds.coerceIn(0,60)
+        DailyRows.threshold(value)
+        preferences.edit().putInt("effective_seconds",value).commit()
+        bumpRevision(true)
+    }
     private data class LedgerRow(val play:Play,val reason:String,val key:String)
     private var importedCache:List<LedgerRow>?=null
     private data class ImportedProjection(val rows:List<LedgerRow>,val policy:ListeningDayPolicy,val metadataVersion:Long,val catalogVersion:Long,val parts:List<DatedPlay>)
@@ -291,7 +299,7 @@ class DiaryDatabase private constructor(private val context:Context,private val 
             if(nativeCovered||importedSince>0)put("manual_skips",rows("SELECT COUNT(*) n FROM events WHERE day>=? AND day<=?",b.from,b.to).getJSONObject(0).getLong("n")+imported.getLong("skips"))
             put("from",b.from);put("to",b.to);put("selected",b.to);put("today",LocalDate.now().toString());put("zone",java.util.TimeZone.getDefault().id)
             put("summary",rows("SELECT COALESCE(SUM(s.ms),0) ms,COUNT(DISTINCT CASE WHEN s.imported=0 OR s.title NOT IN ('','未知歌曲') THEN s.track END) tracks,COUNT(DISTINCT CASE WHEN s.imported=0 OR s.artist NOT IN ('','未知歌手') THEN s.artist END) artists,COUNT(DISTINCT s.day) days FROM diary_rows s"+filter,*args).getJSONObject(0))
-            put("plays",rows("SELECT COUNT(*) n FROM (SELECT s.visit FROM diary_rows s"+filter+"GROUP BY s.visit HAVING SUM(s.ms)>=CASE WHEN MAX(s.duration)>0 THEN MIN(30000,MAX(s.duration)/2) ELSE 30000 END)",*args).getJSONObject(0).getLong("n"))
+            put("plays",rows("SELECT COUNT(*) n FROM (SELECT s.visit FROM diary_rows s"+filter+"GROUP BY s.visit HAVING SUM(s.ms)>=CASE WHEN MAX(s.duration)>0 THEN MIN(${DailyRows.threshold()*1000},MAX(1,MAX(s.duration)/2)) ELSE ${DailyRows.threshold()*1000} END)",*args).getJSONObject(0).getLong("n"))
             put("daily",rows("SELECT s.visit AS visit,s.track AS id,s.title AS title,s.artist AS artist,s.album AS album,s.duration AS duration,MIN(s.start) start,MAX(s.end) end,SUM(s.ms) ms,MAX(s.zone) zone,MAX(s.imported) imported FROM diary_rows s"+filter+"GROUP BY s.visit ORDER BY start ASC",*args))
             put("artists",rows("SELECT s.artist AS artist,SUM(s.ms) ms,COUNT(DISTINCT s.track) tracks,COUNT(DISTINCT s.visit) starts FROM diary_rows s"+filter+"AND (s.imported=0 OR s.artist NOT IN ('','未知歌手')) GROUP BY s.artist ORDER BY ms DESC LIMIT 40",*args))
             put("day_totals",rows("SELECT s.day,SUM(s.ms) ms FROM diary_rows s"+filter+"GROUP BY s.day ORDER BY s.day",*args))
