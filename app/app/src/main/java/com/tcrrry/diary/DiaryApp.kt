@@ -242,6 +242,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
                 Text("用于迁移或恢复日记：导入旧插件或日记 JSON 备份，或导出完整日记备份。",fontSize=12.sp,color=Muted)
                 OutlinedButton(onClick=onImport,modifier=Modifier.fillMaxWidth()){Text("导入插件或日记 JSON 备份")}
                 OutlinedButton(onClick=onExport,modifier=Modifier.fillMaxWidth()){Text("导出完整日记备份")}
+                ManualImportSettings(c)
                 Text("记录不会自动过期。图片缓存上限 100 MB，可重新获取；分钟数只计算实际播放时间。",color=Muted,fontSize=12.sp)
                 OutlinedButton(onClick={settings=false;shareImages=true},modifier=Modifier.fillMaxWidth().testTag("open-share-images")){Text("生成分享图片")}
                 HorizontalDivider(color=Color.White.copy(alpha=.1f))
@@ -281,14 +282,14 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
     if(c.lanPaired)Text("日记打开时自动同步；AM++ 采集器运行时也会尝试后台同步。",fontSize=12.sp,color=Muted)
     if(c.lanPaired){
         Row(verticalAlignment=Alignment.CenterVertically){Text("本机：${c.lanName}",Modifier.weight(1f),fontSize=13.sp,color=Muted);TextButton(onClick={editedName=c.lanName;rename=true}){Text("修改名称")}}
-        val synced=c.lanDevices.filter{it.lastSync>0}
-        if(synced.isNotEmpty())Text("已同步设备："+synced.joinToString("、"){it.name},fontSize=13.sp,color=Muted)
+        val synced=c.lanDevices.filter{it.lastSync>0}.map{it.name}+c.browserDevices.map{it.name}
+        if(synced.isNotEmpty())Text("已同步设备："+synced.joinToString("、"),fontSize=13.sp,color=Muted)
         val pending=c.lanDevices.filter{it.lastSync<=0}
         if(pending.isNotEmpty())Text("同步组设备："+pending.joinToString("、"){it.name}+"（等待首次直接同步）",fontSize=13.sp,color=Muted)
         if(c.lanManualAddress.isNotEmpty())Row(verticalAlignment=Alignment.CenterVertically){Text("连接地址：${c.lanManualAddress}",Modifier.weight(1f),fontSize=12.sp,color=Muted);TextButton(onClick={editedAddress=c.lanManualAddress;editAddress=true}){Text("修改地址")}}
     }
     if(c.lanCode!=null){
-        Text("在另一台设备输入配对码，保持此页面打开。配对码两分钟内有效。",fontSize=13.sp,color=Muted)
+        Text("在另一台设备或网页扩展输入配对码，保持此页面打开。配对码两分钟内有效。",fontSize=13.sp,color=Muted)
         val addresses=remember(c.lanCode){c.lanAddresses()}
         if(addresses.isNotEmpty())Text("本机地址："+addresses.joinToString("、"),fontSize=12.sp,color=Muted)
         androidx.compose.foundation.text.selection.SelectionContainer{Text(c.lanCode!!,fontSize=14.sp)}

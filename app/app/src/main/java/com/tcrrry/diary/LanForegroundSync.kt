@@ -89,6 +89,7 @@ internal class LanForegroundSync private constructor(context:Context) {
         return id
     }
     private fun secret():ByteArray?=prefs.getString("secret",null)?.let{Base64.getUrlDecoder().decode(it)}
+    internal fun browserGroupKey():ByteArray?=secret()?.let{key->javax.crypto.Mac.getInstance("HmacSHA256").apply{init(javax.crypto.spec.SecretKeySpec(key,"HmacSHA256"))}.doFinal("ListeningDiary/browser-upload/v1".toByteArray(Charsets.UTF_8))}
     fun createCode(onFinished:()->Unit):String {
         val existing=secret()
         val key=existing?:LanSyncCrypto.newKey().also{check(prefs.edit().putString("secret",Base64.getUrlEncoder().withoutPadding().encodeToString(it)).commit())}

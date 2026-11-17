@@ -12,9 +12,9 @@ import org.robolectric.annotation.Config
 class LanPeerHintsTest {
     @Test fun onlyPrivateBoundedIpv4HintsAreShared(){
         val id="a".repeat(32)
-        val source=listOf(LanPeerHint(id,"平板",listOf("10.42.0.20","8.8.8.8","127.0.0.1","10.42.0.20","192.168.1.2")))
+        val source=listOf(LanPeerHint(id,"平板",listOf("10.0.0.140","8.8.8.8","127.0.0.1","10.0.0.140","192.168.1.2")))
         val decoded=LanPeerHints.decode(LanPeerHints.encode(source))
-        assertEquals(listOf("10.42.0.20","192.168.1.2"),decoded.single().addresses)
+        assertEquals(listOf("10.0.0.140","192.168.1.2"),decoded.single().addresses)
         assertEquals("平板",decoded.single().name)
         assertFalse(LanPeerHints.isPrivateAddress("10.999.0.1"))
         assertTrue(LanPeerHints.decode(JSONArray().put(JSONObject().put("id","bad"))).isEmpty())
@@ -25,11 +25,11 @@ class LanPeerHintsTest {
     }
     @Test fun aVirtualDeviceLearnsOtherPeersWithoutTreatingThemAsAlreadySynced(){
         val pc="a".repeat(32);val phone="b".repeat(32);val tablet="c".repeat(32)
-        val known=listOf(LanKnownDevice(phone,"手机",123,listOf("10.42.0.10")))
-        val learned=LanPeerHints.merge(known,listOf(LanPeerHint(tablet,"平板",listOf("10.42.0.20"))),pc,phone)
+        val known=listOf(LanKnownDevice(phone,"手机",123,listOf("10.0.0.151")))
+        val learned=LanPeerHints.merge(known,listOf(LanPeerHint(tablet,"平板",listOf("10.0.0.140"))),pc,phone)
         assertEquals(0L,learned.single{it.id==tablet}.lastSync)
-        assertTrue("10.42.0.20" in LanPeerHints.targets("10.42.0.10",learned,listOf("172.20.0.10")))
-        assertTrue(LanPeerHints.targets(null,learned,listOf("172.20.0.10")).isEmpty())
+        assertTrue("10.0.0.140" in LanPeerHints.targets("10.0.0.151",learned,listOf("172.28.34.141")))
+        assertTrue(LanPeerHints.targets(null,learned,listOf("172.28.34.141")).isEmpty())
         val moved=LanPeerHints.merge(learned,listOf(LanPeerHint(tablet,"平板",listOf("10.0.0.141"))),pc,phone)
         assertEquals("10.0.0.141",moved.single{it.id==tablet}.addresses.first())
     }

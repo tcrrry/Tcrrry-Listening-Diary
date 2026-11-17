@@ -34,7 +34,7 @@ class LanSyncSessionTest {
             val firstName=java.util.concurrent.atomic.AtomicReference<String>()
             val secondName=java.util.concurrent.atomic.AtomicReference<String>()
             val firstHints=java.util.concurrent.atomic.AtomicReference<List<LanPeerHint>>()
-            val hint=LanPeerHint("c".repeat(32),"平板",listOf("10.42.0.20"))
+            val hint=LanPeerHint("c".repeat(32),"平板",listOf("10.0.0.140"))
             val fa=pool.submit<String>{LanSyncSession.initiate(LanSyncChannel.open(ai,ao,key),"a".repeat(32),a,ownName="手机",onPeer={_,name->firstName.set(name)},onHints={firstHints.set(it)})}
             val fb=pool.submit<String>{LanSyncSession.accept(LanSyncChannel.open(bi,bo,key),"b".repeat(32),b,ownName="平板",onPeer={_,name->secondName.set(name)},hints=listOf(hint))}
             assertEquals("b".repeat(32),fa.get(10,TimeUnit.SECONDS));assertEquals("a".repeat(32),fb.get(10,TimeUnit.SECONDS))

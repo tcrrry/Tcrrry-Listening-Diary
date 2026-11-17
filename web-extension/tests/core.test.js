@@ -1,0 +1,12 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {step} from '../core.js';
+const song={id:'1',title:'Test',artist:'Artist',duration:180};let serial=0;
+const sample=(at,position,extra={})=>({at,position,playing:true,seeking:false,buffering:false,rate:1,duration:180,song,...extra});
+const run=(arr)=>arr.reduce((s,v)=>step(s,v,()=>String(++serial)).state,null);
+test('counts actual progress and effective threshold',()=>{let s=run(Array.from({length:17},(_,i)=>sample(1000+i*2000,i*2)));assert.equal(s.ms,32000);assert.equal(step(s,sample(35000,34),()=>String(++serial)).record.effective,true)});
+test('paused and buffering intervals do not accrue',()=>{const s=run([sample(1000,0),sample(3000,2),sample(5000,2,{playing:false}),sample(7000,2),sample(9000,4,{buffering:true}),sample(11000,6)]);assert.equal(s.ms,2000)});
+test('seek and large jumps never count skipped audio',()=>{let s=run([sample(1000,0),sample(3000,2),sample(5000,120),sample(7000,122)]);assert.equal(s.ms,4000)});
+test('long gaps are not invented',()=>{let s=run([sample(1000,0),sample(62000,61)]);assert.equal(s.ms,0)});
+test('loop from end starts separate visit',()=>{let a=run([sample(1000,175),sample(3000,177)]),b=step(a,sample(5000,1),()=>String(++serial)).state;assert.notEqual(a.id,b.id);assert.equal(b.ms,0)});
+test('ordinary backwards seek keeps same visit',()=>{let a=run([sample(1000,50),sample(3000,52)]),b=step(a,sample(5000,10),()=>String(++serial)).state;assert.equal(a.id,b.id);assert.equal(b.ms,2000)});
+test('short song reaches half duration',()=>{const short={...song,duration:20};let s=run(Array.from({length:6},(_,i)=>sample(1000+i*2000,i*2,{song:short,duration:20})));assert.equal(step(s,sample(11001,10,{song:short,duration:20}),()=>String(++serial)).record.effective,true)});
+test('switch song starts new visit and null clears state',()=>{let a=run([sample(1000,1),sample(3000,3)]);let b=step(a,sample(5000,0,{song:{...song,id:'2'}}),()=>String(++serial)).state;assert.notEqual(a.id,b.id);assert.equal(step(b,sample(7000,0,{song:null}),()=>String(++serial)).state,null)});

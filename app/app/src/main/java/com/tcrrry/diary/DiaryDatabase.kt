@@ -40,6 +40,7 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         execSQL("CREATE INDEX IF NOT EXISTS events_day ON events(day)")
         execSQL("CREATE TABLE IF NOT EXISTS event_sources(source TEXT PRIMARY KEY,since INTEGER NOT NULL)")
         execSQL("CREATE TABLE IF NOT EXISTS import_batches(id TEXT PRIMARY KEY,label TEXT NOT NULL,rows INTEGER NOT NULL,ms INTEGER NOT NULL,from_day TEXT NOT NULL,to_day TEXT NOT NULL,imported_at INTEGER NOT NULL)")
+        execSQL("CREATE TABLE IF NOT EXISTS manual_imports(id TEXT PRIMARY KEY,label TEXT NOT NULL,kind TEXT NOT NULL,rows INTEGER NOT NULL,ms INTEGER NOT NULL,from_day TEXT NOT NULL,to_day TEXT NOT NULL,imported_at INTEGER NOT NULL)")
         execSQL("CREATE TABLE IF NOT EXISTS import_tracks(batch TEXT NOT NULL,id TEXT NOT NULL,title TEXT NOT NULL,artist TEXT NOT NULL,album TEXT NOT NULL,duration INTEGER NOT NULL,PRIMARY KEY(batch,id))")
         execSQL("CREATE TABLE IF NOT EXISTS import_spans(batch TEXT NOT NULL,row_key TEXT NOT NULL,part INTEGER NOT NULL,visit TEXT NOT NULL,track TEXT NOT NULL,day TEXT NOT NULL,zone TEXT NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,ms INTEGER NOT NULL,reason TEXT NOT NULL,original_end INTEGER NOT NULL,start_position INTEGER NOT NULL,end_position INTEGER NOT NULL,inferred INTEGER NOT NULL,PRIMARY KEY(batch,row_key,part))")
         execSQL("CREATE INDEX IF NOT EXISTS import_spans_day ON import_spans(day)")
@@ -219,7 +220,7 @@ class DiaryDatabase private constructor(private val context:Context,private val 
     @Synchronized fun writeBackup(writer:java.io.Writer){
         val out=android.util.JsonWriter(writer)
         out.beginObject();out.name("schemaVersion").value(1);out.name("format").value("listening-diary-app");out.name("sourceId").value("app");out.name("exportedAt").value(System.currentTimeMillis())
-        for(table in listOf("tracks","spans","events","event_sources","import_batches","import_tracks","import_spans")){
+        for(table in listOf("tracks","spans","events","event_sources","import_batches","import_tracks","import_spans","manual_imports")){
             out.name(table).beginArray()
             db.rawQuery("SELECT * FROM $table",null).use{c->while(c.moveToNext()){out.beginObject();for(i in 0 until c.columnCount){out.name(c.getColumnName(i));when(c.getType(i)){android.database.Cursor.FIELD_TYPE_INTEGER->out.value(c.getLong(i));android.database.Cursor.FIELD_TYPE_NULL->out.nullValue();else->out.value(c.getString(i))}};out.endObject()}}
             out.endArray()
@@ -316,11 +317,27 @@ class DiaryDatabase private constructor(private val context:Context,private val 
             if(table=="import_spans"){require(row.getLong("end")>row.getLong("start")&&row.getLong("end")-row.getLong("start")==row.getLong("ms"));LocalDate.parse(row.getString("day"));java.time.ZoneId.of(row.getString("zone"))}
             if(table=="import_batches"){LocalDate.parse(row.getString("from_day"));LocalDate.parse(row.getString("to_day"));require(row.getLong("ms")>0&&row.getInt("rows")>0)}
         };data}
+        val manual=payload.optJSONArray("manual_imports")?:JSONArray();require(manual.length()<=100000)
+        for(i in 0 until manual.length()){val r=manual.getJSONObject(i);require(r.keys().asSequence().toSet()==setOf("id","label","kind","rows","ms","from_day","to_day","imported_at"));require(r.getString("id").matches(Regex("[0-9a-f]{64}")));require(r.getString("kind") in listOf("网页记录","日记备份","插件备份","JSON 记录"));require(r.getString("label").length<=180&&r.getLong("ms")>=0&&r.getInt("rows")>=0);for(k in listOf("from_day","to_day")){val day=r.getString(k);if(day.isNotEmpty())LocalDate.parse(day)}}
         val ids=appleBatches().map{it.id}.toSet()+result.getValue("import_batches").objects().map{it.getString("id")}
         for(table in listOf("import_tracks","import_spans"))for(row in result.getValue(table).objects())require(row.getString("batch") in ids)
-        return result
+        return result+mapOf("manual_imports" to manual)
     }
     @Synchronized internal fun appleBatches():List<AppleBatch> = rows("SELECT * FROM import_batches ORDER BY imported_at DESC").objects().map{AppleBatch(it.getString("id"),it.getString("label"),it.getInt("rows"),it.getLong("ms"),it.getString("from_day"),it.getString("to_day"),it.getLong("imported_at"))}
+    @Synchronized internal fun manualBatches():List<AppleBatch> = rows("SELECT * FROM manual_imports ORDER BY imported_at DESC").objects().map{AppleBatch("manual:"+it.getString("id"),it.getString("kind")+" · "+it.getString("label"),it.getInt("rows"),it.getLong("ms"),it.getString("from_day"),it.getString("to_day"),it.getLong("imported_at"))}
+    @Synchronized internal fun rememberManualImport(bytes:ByteArray,payload:JSONObject,label:String){
+        val id=java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it.toInt() and 255)}
+        val source=payload.optString("sourceId");val kind=when{source=="web_preview"->"网页记录";payload.optString("format")=="listening-diary-app"->"日记备份";payload.has("plugin")->"插件备份";else->"JSON 记录"}
+        val items=listOf(payload.optJSONArray("spans")?:JSONArray(),payload.optJSONArray("import_spans")?:JSONArray());val days=mutableListOf<String>();var count=0;var ms=0L
+        for(a in items)for(i in 0 until a.length()){val row=a.getJSONObject(i);row.optString("day").takeIf{it.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))}?.let(days::add);count++;ms+=row.optLong("ms",0).coerceAtLeast(0)}
+        val values=ContentValues().apply{put("id",id);put("label",label.take(180));put("kind",kind);put("rows",count);put("ms",ms);put("from_day",days.minOrNull().orEmpty());put("to_day",days.maxOrNull().orEmpty());put("imported_at",System.currentTimeMillis())}
+        db.insertWithOnConflict("manual_imports",null,values,SQLiteDatabase.CONFLICT_IGNORE)
+    }
+    @Synchronized internal fun webImportSummary():AppleBatch? {
+        val row=rows("SELECT COUNT(DISTINCT visit) n,COALESCE(SUM(ms),0) ms,MIN(day) first_day,MAX(day) last_day FROM spans WHERE remote_id LIKE 'web:%'").getJSONObject(0)
+        if(row.getInt("n")==0)return null
+        return AppleBatch("web_preview","网页听歌记录",row.getInt("n"),row.getLong("ms"),row.getString("first_day"),row.getString("last_day"),0)
+    }
     @Synchronized internal fun importApple(plan:ApplePlan,check:()->Unit={}):Boolean {
         require(plan.rows.isNotEmpty()&&plan.rows.size<=500000);for(r in plan.rows)require(r.ms>0&&r.ms<=7*24*3600000L&&r.start>=946684800000L&&r.track.id.length<=2048&&r.key.length<=128)
         if(appleBatches().any{it.id==plan.fingerprint})return false
@@ -337,7 +354,7 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         }finally{db.endTransaction()};bumpRevision(true);importedCache=null;return true
     }
     @Synchronized internal fun removeApple(batch:String){db.beginTransaction();try{db.delete("import_spans","batch=?",arrayOf(batch));db.delete("import_tracks","batch=?",arrayOf(batch));db.delete("import_batches","id=?",arrayOf(batch));db.setTransactionSuccessful()}finally{db.endTransaction()};bumpRevision(true);importedCache=null}
-    @Synchronized fun backup()=JSONObject().put("schemaVersion",1).put("format","listening-diary-app").put("sourceId","app").put("exportedAt",System.currentTimeMillis()).put("tracks",rows("SELECT * FROM tracks")).put("spans",rows("SELECT * FROM spans ORDER BY start")).put("events",rows("SELECT * FROM events ORDER BY at")).put("event_sources",rows("SELECT * FROM event_sources")).put("import_batches",rows("SELECT * FROM import_batches")).put("import_tracks",rows("SELECT * FROM import_tracks")).put("import_spans",rows("SELECT * FROM import_spans"))
+    @Synchronized fun backup()=JSONObject().put("schemaVersion",1).put("format","listening-diary-app").put("sourceId","app").put("exportedAt",System.currentTimeMillis()).put("tracks",rows("SELECT * FROM tracks")).put("spans",rows("SELECT * FROM spans ORDER BY start")).put("events",rows("SELECT * FROM events ORDER BY at")).put("event_sources",rows("SELECT * FROM event_sources")).put("import_batches",rows("SELECT * FROM import_batches")).put("import_tracks",rows("SELECT * FROM import_tracks")).put("import_spans",rows("SELECT * FROM import_spans")).put("manual_imports",rows("SELECT * FROM manual_imports"))
     /** The change journal is installed only after explicit device-pairing opt-in. */
     @Synchronized internal fun lanStore():LanSyncStore {
         check(!projectionOnly);LanChangeJournal.install(db);val owner=this

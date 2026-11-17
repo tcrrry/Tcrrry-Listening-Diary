@@ -141,21 +141,23 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
     internal var lanName by mutableStateOf("");private set
     internal var lanManualAddress by mutableStateOf("");private set
     internal var lanDevices by mutableStateOf<List<LanKnownDevice>>(emptyList());private set
+    internal var browserDevices by mutableStateOf<List<BrowserSyncDevice>>(emptyList());private set
     private val lan=LanForegroundSync.shared(activity)
+    private val browserSync:BrowserSyncServer by lazy {BrowserSyncServer(activity,{lan.browserGroupKey()},{lan.localAddresses()+lan.peers().flatMap{it.addresses}},{lan.ownName()}){browserDevices=browserSync.devices();if(foreground)refresh(true)}}
     internal fun lanRename(name:String){runCatching{lan.rename(name);lanName=lan.ownName()}.onFailure{lanStatus=it.message?:"设备名称无效"}}
     internal fun lanManualAddress(value:String):Boolean=runCatching{lan.manualAddress(value);lanManualAddress=lan.manualAddress();true}.getOrElse{lanStatus=it.message?:"地址无效";false}
     internal fun lanPermissionDenied(){lanStatus="需要允许局域网权限才能发现并连接设备"}
-    internal fun lanCreateCode(){(activity as MainActivity).withLanPermission{runCatching{lanCode=lan.createCode{lanCode=null};lanPaired=lan.paired}.onFailure{lanStatus="无法生成配对码"}}}
-    internal fun lanJoin(code:String,address:String){(activity as MainActivity).withLanPermission{runCatching{lan.join(code,address){error->if(error==null){lanPaired=lan.paired;lanManualAddress=lan.manualAddress();lanCode=null}else lanStatus=error}}.onFailure{lanStatus=it.message?:"配对码无效"}}}
+    internal fun lanCreateCode(){(activity as MainActivity).withLanPermission{runCatching{val code=lan.createCode{lanCode=null;browserSync.cancelGroupPairing()};lanCode=code;lanPaired=lan.paired;browserSync.beginGroupPairing(code)}.onFailure{lanStatus="无法生成配对码"}}}
+    internal fun lanJoin(code:String,address:String){(activity as MainActivity).withLanPermission{runCatching{lan.join(code,address){error->if(error==null){lanPaired=lan.paired;lanManualAddress=lan.manualAddress();lanCode=null;if(foreground)browserSync.start()}else lanStatus=error}}.onFailure{lanStatus=it.message?:"配对码无效"}}}
     internal fun lanAddresses()=lan.localAddresses()
     internal fun lanEnable(){(activity as MainActivity).withLanPermission{lan.start()}}
-    internal fun lanHideCode(){lan.hideCode();lanCode=null}
-    internal fun lanUnpair(){lan.unpair();lanCode=null;lanPaired=false;lanStatus="尚未配对"}
+    internal fun lanHideCode(){lan.hideCode();browserSync.cancelGroupPairing();lanCode=null}
+    internal fun lanUnpair(){browserSync.cancelGroupPairing();browserSync.revoke();browserDevices=emptyList();lan.unpair();lanCode=null;lanPaired=false;lanStatus="尚未配对"}
     val syncing get()=collectorLink.syncing
     val syncStatus get()=collectorLink.status
     private val observer=object:ContentObserver(Handler(Looper.getMainLooper())){override fun onChange(selfChange:Boolean){if(foreground){collectorLink.received();refresh(true)}}}
-    fun start(){if(foreground)return;foreground=true;lan.bind({lanStatus=it},{if(foreground)refresh(true)},{lanDevices=it});lanPaired=lan.paired;lanName=lan.ownName();lanManualAddress=lan.manualAddress();lanDevices=lan.peers();lan.start();startListeningClock();if(amTypeface==null&&fontJob?.isActive!=true)fontJob=scope.launch{amTypeface=withContext(Dispatchers.IO){runCatching{val host=activity.createPackageContext(BridgeIdentity.HOST,0);val rounded=host.resources.getIdentifier("sf_pro_rounded_android_ui","font",BridgeIdentity.HOST);val id=if(rounded!=0)rounded else host.resources.getIdentifier("sf_pro_android_ui","font",BridgeIdentity.HOST);if(id!=0)host.resources.getFont(id)else null}.getOrNull()}};images.active(true);imageEpoch++;activity.contentResolver.registerContentObserver(BridgeIdentity.URI,true,observer);approved=BridgeIdentity.approved(activity);refresh(false);if(!demo)collectorLink.start(approved)}
-    fun stop(){if(!foreground)return;lan.stop();lan.unbind();lanCode=null;summaryExitTicket++;summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();foreground=false;activity.contentResolver.unregisterContentObserver(observer);images.active(false)}
+    fun start(){if(foreground)return;foreground=true;lan.bind({lanStatus=it},{if(foreground)refresh(true)},{lanDevices=it});lanPaired=lan.paired;lanName=lan.ownName();lanManualAddress=lan.manualAddress();lanDevices=lan.peers();browserDevices=browserSync.devices();lan.start();browserSync.start();startListeningClock();if(amTypeface==null&&fontJob?.isActive!=true)fontJob=scope.launch{amTypeface=withContext(Dispatchers.IO){runCatching{val host=activity.createPackageContext(BridgeIdentity.HOST,0);val rounded=host.resources.getIdentifier("sf_pro_rounded_android_ui","font",BridgeIdentity.HOST);val id=if(rounded!=0)rounded else host.resources.getIdentifier("sf_pro_android_ui","font",BridgeIdentity.HOST);if(id!=0)host.resources.getFont(id)else null}.getOrNull()}};images.active(true);imageEpoch++;activity.contentResolver.registerContentObserver(BridgeIdentity.URI,true,observer);approved=BridgeIdentity.approved(activity);refresh(false);if(!demo)collectorLink.start(approved)}
+    fun stop(){if(!foreground)return;browserSync.stop();lan.stop();lan.unbind();lanCode=null;summaryExitTicket++;summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();foreground=false;activity.contentResolver.unregisterContentObserver(observer);images.active(false)}
     fun close(){summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();appleListJob?.cancel();appleJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();job?.cancel();fontJob?.cancel();images.close()}
     private var summaryExitJob:Job?=null
     private var summaryExitTicket=0L
@@ -431,12 +433,14 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
     }
     internal var applePlan by mutableStateOf<ApplePlan?>(null);private set
     internal var appleBatches by mutableStateOf<List<AppleBatch>>(emptyList());private set
+    internal var manualImports by mutableStateOf<List<AppleBatch>>(emptyList());private set
+    internal var webImport by mutableStateOf<AppleBatch?>(null);private set
     var appleBusy by mutableStateOf(false);private set
     var appleError by mutableStateOf<String?>(null);private set
     var appleCompleted by mutableIntStateOf(0);private set
     private var appleJob:Job?=null
     private var appleListJob:Job?=null
-    fun loadAppleBatches(){appleListJob?.cancel();appleListJob=scope.launch{try{appleBatches=withContext(Dispatchers.IO){DiaryDatabase.get(activity).appleBatches()}}catch(e:CancellationException){throw e}catch(e:Exception){appleError="读取导入列表失败，请保留数据后重试"}}}
+    fun loadAppleBatches(){appleListJob?.cancel();appleListJob=scope.launch{try{val lists=withContext(Dispatchers.IO){val db=DiaryDatabase.get(activity);Triple(db.appleBatches(),db.manualBatches(),db.webImportSummary())};appleBatches=lists.first;manualImports=lists.second;webImport=lists.third}catch(e:CancellationException){throw e}catch(e:Exception){appleError="读取导入列表失败，请保留数据后重试"}}}
     fun stageApple(uri:android.net.Uri){if(appleBusy)return;appleBusy=true;appleError=null;appleJob=scope.launch{
         try{val current=kotlinx.coroutines.currentCoroutineContext();applePlan=withContext(Dispatchers.IO){
             val label=runCatching{activity.contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst())it.getString(0)else null}}.getOrNull()?:"Apple Music 导入"
@@ -449,11 +453,11 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
         val current=kotlinx.coroutines.currentCoroutineContext();val added=withContext(Dispatchers.IO){DiaryDatabase.get(activity).importApple(plan){current.ensureActive()}}
         applePlan=null;appleBatches=withContext(Dispatchers.IO){DiaryDatabase.get(activity).appleBatches()};demo=false;if(foreground)collectorLink.start(approved);select(java.time.LocalDate.parse(plan.to),DiaryRange.DAY);appleCompleted++;notice=if(added)"Apple 历史已导入，可在设置中单独移除"else "这批记录已存在，没有重复导入"
     }catch(e:CancellationException){throw e}catch(e:Exception){appleError="导入未完成：${e.message?:e.javaClass.simpleName}"}finally{appleBusy=false}}}
-    internal fun viewApple(batch:AppleBatch){demo=false;if(foreground)collectorLink.start(approved);select(java.time.LocalDate.parse(batch.to),DiaryRange.DAY);appleCompleted++}
+    internal fun viewApple(batch:AppleBatch){val date=runCatching{java.time.LocalDate.parse(batch.to)}.getOrNull()?:return;demo=false;if(foreground)collectorLink.start(approved);select(date,DiaryRange.DAY);appleCompleted++}
     fun removeApple(id:String){if(appleBusy)return;appleBusy=true;appleJob=scope.launch{try{
         withContext(Dispatchers.IO){DiaryDatabase.get(activity).removeApple(id)};appleBatches=withContext(Dispatchers.IO){DiaryDatabase.get(activity).appleBatches()};refresh(false);notice="已移除此批导入，采集记录保持不变"
     }catch(e:CancellationException){throw e}catch(e:Exception){appleError="移除未完成：${e.javaClass.simpleName}"}finally{appleBusy=false}}}
-    fun importJson(uri:android.net.Uri){scope.launch{loading=true;try{val count=withContext(Dispatchers.IO){val bytes=activity.contentResolver.openInputStream(uri)!!.use{input->val out=java.io.ByteArrayOutputStream();val buf=ByteArray(8192);var n=input.read(buf);while(n!=-1){require(out.size()+n<=128*1024*1024){"备份超过 128 MB"};out.write(buf,0,n);n=input.read(buf)};out.toByteArray()};DiaryDatabase.get(activity).ingest(JSONObject(bytes.toString(Charsets.UTF_8)),true)};notice="已导入 $count 段记录；重复记录不会累加";demo=false;refresh(false)}catch(e:Exception){notice="导入失败：${e.message?:e.javaClass.simpleName}；已有记录未清空";loading=false}}}
+    fun importJson(uri:android.net.Uri){scope.launch{loading=true;try{val count=withContext(Dispatchers.IO){val bytes=activity.contentResolver.openInputStream(uri)!!.use{input->val out=java.io.ByteArrayOutputStream();val buf=ByteArray(8192);var n=input.read(buf);while(n!=-1){require(out.size()+n<=128*1024*1024){"备份超过 128 MB"};out.write(buf,0,n);n=input.read(buf)};out.toByteArray()};val data=JSONObject(bytes.toString(Charsets.UTF_8));val db=DiaryDatabase.get(activity);val result=db.ingest(data,true);val label=runCatching{activity.contentResolver.query(uri,arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),null,null,null)?.use{if(it.moveToFirst())it.getString(0)else null}}.getOrNull()?:"导入文件";result to runCatching{db.rememberManualImport(bytes,data,label)}.isSuccess};notice="已导入 ${count.first} 段记录；重复记录不会累加"+if(count.second)"" else "；导入列表未保存，请保留原文件";demo=false;loadAppleBatches();refresh(false)}catch(e:Exception){notice="导入失败：${e.message?:e.javaClass.simpleName}；已有记录未清空";loading=false}}}
     fun exportJson(uri:android.net.Uri){scope.launch{try{withContext(Dispatchers.IO){activity.contentResolver.openOutputStream(uri)!!.bufferedWriter().use{DiaryDatabase.get(activity).writeBackup(it)}};notice="完整备份已保存"}catch(e:Exception){notice="导出失败，请检查存储空间"}}}
     fun save(out:Bundle){out.putBoolean("follow_today",followsListeningToday);out.putBoolean("summary",summary);out.putString("day",day.toString());out.putInt("range",range.ordinal)}
 }

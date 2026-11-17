@@ -15,7 +15,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.*
 
 @Composable internal fun AppleImportSettings(c:DiaryController,choose:()->Unit){
-    LaunchedEffect(Unit){c.loadAppleBatches()};var removal by remember{mutableStateOf<AppleBatch?>(null)};var help by rememberSaveable{mutableStateOf(false)}
+    LaunchedEffect(Unit){c.loadAppleBatches()};var removal by remember{mutableStateOf<AppleBatch?>(null)};var help by rememberSaveable{mutableStateOf(false)};var showAll by rememberSaveable{mutableStateOf(false)}
     val uriHandler=LocalUriHandler.current
     Column(Modifier.fillMaxWidth().animateContentSize(spring(.9f,300f)),verticalArrangement=Arrangement.spacedBy(10.dp)){
         Text("Apple 官方历史",fontSize=18.sp)
@@ -32,12 +32,38 @@ import androidx.compose.ui.unit.*
             Text("三份可放进同一个ZIP。其余账户、设备、收藏和推荐资料都不需要。每日汇总仅用于补资料，不重复增加播放。",fontSize=12.sp,color=Muted)
         }}
         c.appleError?.let{Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.error)}
-        c.appleBatches.forEach{batch->Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(Muted.copy(alpha=.06f)).padding(13.dp),verticalArrangement=Arrangement.spacedBy(5.dp)){
-            Text(batch.label,fontSize=14.sp,maxLines=2);Text("${batch.from} — ${batch.to}",fontSize=12.sp,color=Muted);Text("${batch.rows}段 · ${shortDuration(batch.ms)}",fontSize=12.sp,color=Muted)
+        c.appleBatches.take(3).forEach{batch->Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(Muted.copy(alpha=.06f)).padding(13.dp)){
+            Text("Apple 官方 · "+batch.label,fontSize=14.sp,maxLines=2);Text("${batch.from} — ${batch.to}",fontSize=12.sp,color=Muted);Text("${batch.rows}段 · ${shortDuration(batch.ms)}",fontSize=12.sp,color=Muted)
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){TextButton(onClick={c.viewApple(batch)}){Text("查看")};TextButton(onClick={removal=batch},enabled=!c.appleBusy,modifier=Modifier.testTag("apple-remove:${batch.id}")){Text("移除此批",color=MaterialTheme.colorScheme.error)}}
         }}
+        if(c.appleBatches.size>3)TextButton(onClick={showAll=true}){Text("查看全部 ${c.appleBatches.size} 条 Apple 导入记录",fontSize=13.sp)}
     }
+    if(showAll)AlertDialog(onDismissRequest={showAll=false},title={Text("Apple 导入记录")},text={Column(Modifier.heightIn(max=440.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
+        c.appleBatches.forEach{batch->Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(Muted.copy(alpha=.06f)).padding(13.dp)){
+            Text(batch.label,fontSize=14.sp,maxLines=2);Text("${batch.from} — ${batch.to}",fontSize=12.sp,color=Muted);Text("${batch.rows}段 · ${shortDuration(batch.ms)}",fontSize=12.sp,color=Muted)
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){TextButton(onClick={showAll=false;c.viewApple(batch)}){Text("查看")};TextButton(onClick={showAll=false;removal=batch},enabled=!c.appleBusy){Text("移除此批",color=MaterialTheme.colorScheme.error)}}
+        }}
+    }},confirmButton={TextButton(onClick={showAll=false}){Text("关闭")}})
     removal?.let{batch->AlertDialog(onDismissRequest={removal=null},title={Text("移除此批导入？",fontSize=22.sp)},text={Text("只移除这批 Apple 历史。现有采集记录、其他导入批次和图片缓存会保留，原文件可再次导入。")},confirmButton={TextButton(onClick={removal=null;c.removeApple(batch.id)},modifier=Modifier.testTag("apple-remove-confirm")){Text("移除")}},dismissButton={TextButton(onClick={removal=null}){Text("取消")}})}
+}
+@Composable internal fun ManualImportSettings(c:DiaryController){
+    var all by rememberSaveable{mutableStateOf(false)}
+    val priorWeb=if(c.manualImports.any{it.label.startsWith("网页记录 ·")})null else c.webImport
+    val batches=(c.manualImports+listOfNotNull(priorWeb)).sortedByDescending{it.importedAt}
+    if(batches.isNotEmpty()){
+        Text("其他手动导入",fontSize=16.sp)
+        batches.take(3).forEach{batch->ManualImportRow(batch){c.viewApple(batch)}}
+        if(batches.size>3)TextButton(onClick={all=true}){Text("查看全部 ${batches.size} 条导入记录",fontSize=13.sp)}
+        Text("这里显示导入文件的信息；重复导入的文件不会重复列出。",fontSize=12.sp,color=Muted)
+    }
+    if(all)AlertDialog(onDismissRequest={all=false},title={Text("其他手动导入")},text={Column(Modifier.heightIn(max=440.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){batches.forEach{batch->ManualImportRow(batch){all=false;c.viewApple(batch)}}}},confirmButton={TextButton(onClick={all=false}){Text("关闭")}})
+}
+@Composable private fun ManualImportRow(batch:AppleBatch,onView:()->Unit){
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(Muted.copy(alpha=.06f)).padding(13.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
+        Text(batch.label,fontSize=14.sp,maxLines=2);Text(if(batch.from.isBlank())"无日期信息" else "${batch.from} — ${batch.to}",fontSize=12.sp,color=Muted)
+        Text("${batch.rows}${if(batch.id=="web_preview")"次播放记录" else "段"} · ${shortDuration(batch.ms)}",fontSize=12.sp,color=Muted)
+        if(batch.to.isNotBlank())Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){TextButton(onClick=onView){Text("查看")}}
+    }
 }
 @Composable internal fun AppleImportReview(c:DiaryController){
     val plan=c.applePlan?:return
