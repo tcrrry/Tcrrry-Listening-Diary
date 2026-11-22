@@ -58,7 +58,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
     return pager
 }
 
-@Composable internal fun PeriodReportPage(c:DiaryController,b:Backdrop,calendar:()->Unit,settings:()->Unit,open:(Play,String)->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope,onTint:(List<Color>)->Unit,allowAuto:Boolean,period:DiaryRange=c.range,snapshot:DiaryReport=c.report,allSongs:(Boolean)->Unit={},allArtists:(String)->Unit={},periodVisibility:AnimatedVisibilityScope=visibility,summaryVisibility:AnimatedVisibilityScope=visibility,precomputed:PeriodComputed?=null,showPeriodHistory:(LocalDate?,PeriodComputed?)->Unit={_,_->}){
+@Composable internal fun PeriodReportPage(c:DiaryController,b:Backdrop,calendar:()->Unit,settings:()->Unit,open:(Play,String)->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope,onTint:(List<Color>)->Unit,allowAuto:Boolean,period:DiaryRange=c.range,snapshot:DiaryReport=c.report,allSongs:(Boolean)->Unit={},allArtists:(String)->Unit={},periodVisibility:AnimatedVisibilityScope=visibility,summaryVisibility:AnimatedVisibilityScope=visibility,precomputed:PeriodComputed?=null,showPeriodHistory:(LocalDate?,PeriodComputed?)->Unit={_,_->},allNew:(Boolean)->Unit={}){
     val r=snapshot;val range=period;val day=c.day;val detailActions=LocalDetailActions.current
     val fresh=if(precomputed!=null&&precomputed.day==day&&precomputed.range==range)precomputed else if(c.demo)remember(r,day,range){computePeriod(r,day,range)}else {
         val result by produceState<PeriodComputed?>(null,r,day,range){value=withContext(Dispatchers.Default){computePeriod(r,day,range)}}
@@ -81,25 +81,6 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
     }
     val dailySongs=computed?.dailySongs.orEmpty()
     val list=rememberLazyListState()
-    var discoveriesRequested by remember(r,c.day,range){mutableStateOf(false)}
-    val discoveryVisible by remember(list,range){derivedStateOf{list.layoutInfo.visibleItemsInfo.any{it.key==when(range){DiaryRange.WEEK->"weekly-new";DiaryRange.MONTH->"monthly-new";DiaryRange.YEAR->"yearly-new";else->""}}}}
-    LaunchedEffect(discoveryVisible){if(discoveryVisible)discoveriesRequested=true}
-    val weeklyExtras by produceState<WeeklyExtras?>(null,r,computed,c.day,c.dayPolicy,c.demo,c.dataRevision,range,c.range,c.summary,discoveriesRequested){
-        if(!discoveriesRequested||computed==null||range==DiaryRange.DAY||c.range!=range||c.summary)return@produceState
-        value=null
-        try{
-            val (candidates,ids,artists)=withContext(Dispatchers.Default){
-                val candidates=r.history.filter{!it.imported||it.title!="未知歌曲"}
-                Triple(candidates,candidates.map{it.id}.toSet(),candidates.map{it.artist}.filter{it.isNotBlank()&&it!="未知歌手"}.toSet())
-            }
-            val discovered=if(c.demo)ids to artists else withContext(Dispatchers.IO){DiaryDatabase.projection(c.activity).periodNewIdentities(c.day,range,c.dayPolicy,ids,artists)}
-            value=withContext(Dispatchers.Default){
-                val songs=sortedPlays(candidates.filter{it.id in discovered.first},SortOrder.COUNT)
-                val groups=artistWeekGroups(r).filter{it.title in discovered.second}
-                WeeklyExtras(songs,groups)
-            }
-        }catch(e:CancellationException){throw e}catch(_:Exception){value=null}
-    }
     val first=LocalDate.parse(bounds(c.day,range).from);val last=LocalDate.parse(bounds(c.day,range).to)
     val dates=remember(first,last){generateSequence(first){it.plusDays(1)}.takeWhile{it<=last}.toList()}
     var selectedTrendMonth by remember(c.day,range){mutableIntStateOf(0)}
@@ -137,7 +118,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                         if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->val heard=dailySongs.count{(_,songs)->songs.any{it.id==p.id}};SongReportRow(c,p,i,if(heard>0)"${p.artist} · 听了${heard}天" else p.artist){open(p,"weekly:${p.id}")}}}
                     }
                 }}}
-                item("weekly-new"){PeriodMotion(periodVisibility,2){WeeklyNewSection(c,weeklyExtras,range,open)}}
+                item("weekly-new"){PeriodMotion(periodVisibility,2){NewListeningSection(c,range,r,open,allNew)}}
             }
             DiaryRange.MONTH->{
                 item("calendar"){PeriodMotion(periodVisibility,0){ReportPanel(Modifier.historyPanel()){
@@ -148,7 +129,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                 item("monthly-favorites"){PeriodMotion(periodVisibility,2){Column(Modifier.padding(horizontal=18.dp)){FavoriteHeading("本月偏爱",albumMode,{albumMode=it}){allSongs(albumMode)}
                     AnimatedContent(albumMode,transitionSpec={fadeIn(tween(250))+slideInHorizontally{it/10} togetherWith fadeOut(tween(160))},label="monthly favorites"){showAlbums->if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->SongReportRow(c,p,i,"${p.artist} · 听了${dailySongs.count{(_,songs)->songs.any{it.id==p.id}}}天"){open(p,"month:${p.id}")}}}}
                 }}}
-                item("monthly-new"){PeriodMotion(periodVisibility,2){WeeklyNewSection(c,weeklyExtras,range,open)}}
+                item("monthly-new"){PeriodMotion(periodVisibility,2){NewListeningSection(c,range,r,open,allNew)}}
             }
             DiaryRange.YEAR->{
 
@@ -165,7 +146,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                     }
                 }}}
         }
-        if(range==DiaryRange.YEAR)item("yearly-new"){PeriodMotion(periodVisibility,2){WeeklyNewSection(c,weeklyExtras,range,open)}}
+        if(range==DiaryRange.YEAR)item("yearly-new"){PeriodMotion(periodVisibility,2){NewListeningSection(c,range,r,open,allNew)}}
         item("artists"){PeriodMotion(periodVisibility,0){Column(Modifier.padding(horizontal=17.dp)){
             MemoryHeading("${label}常听歌手"){allArtists("")};Spacer(Modifier.height(15.dp))
             LazyRow(Modifier.testTag("period-artist-strip").graphicsLayer{compositingStrategy=CompositingStrategy.Offscreen}.drawWithContent{drawContent();val fade=14.dp.toPx();drawRect(Brush.horizontalGradient(listOf(Color.Transparent,Color.White),endX=fade),blendMode=BlendMode.DstIn);drawRect(Brush.horizontalGradient(listOf(Color.White,Color.Transparent),startX=size.width-fade,endX=size.width),blendMode=BlendMode.DstIn)},horizontalArrangement=Arrangement.spacedBy(4.dp)){
@@ -184,48 +165,6 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
 }
 
 internal data class WeeklyExtras(val newSongs:List<Play>,val newArtists:List<LibraryGroup>)
-
-@Composable private fun WeeklyNewSection(c:DiaryController,data:WeeklyExtras?,range:DiaryRange,open:(Play,String)->Unit){
-    val period=detailPeriodName(range)
-    var artistTab by rememberSaveable(c.day,range){mutableStateOf(false)}
-    var expanded by rememberSaveable(c.day,artistTab){mutableStateOf(false)}
-    val detail=LocalDetailActions.current
-    Column(Modifier.padding(horizontal=18.dp).testTag("weekly-new")){
-        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
-            Text("${period}新增",Modifier.weight(1f),fontSize=23.sp,fontWeight=FontWeight.Bold)
-            SmallTabs(listOf("歌曲","歌手"),if(artistTab)1 else 0){artistTab=it==1}
-            val count=if(artistTab)data?.newArtists?.size?:0 else data?.newSongs?.size?:0
-            if(count>5)Text("全部 ›",Modifier.padding(start=12.dp).press{expanded=true},fontSize=13.sp,color=Muted)
-        }
-        if(data==null)Text("正在整理${period}首次收听…",Modifier.padding(top=12.dp),fontSize=12.sp,color=Muted)
-        else if(artistTab){
-            val rows=data.newArtists.take(5)
-            if(rows.isEmpty())Text("${period}没有首次收听的歌手",Modifier.padding(top=12.dp),fontSize=12.sp,color=Muted)
-            rows.forEachIndexed{i,g->WeeklyNewArtistRow(c,g,i){detail?.artist?.invoke(g.title,"new-artist:${g.key}")}}
-        }else{
-            val rows=data.newSongs.take(5)
-            if(rows.isEmpty())Text("${period}没有首次收听的歌曲",Modifier.padding(top=12.dp),fontSize=12.sp,color=Muted)
-            rows.forEachIndexed{i,p->SongReportRow(c,p,i,p.artist){open(p,"new-song:${p.id}")}}
-        }
-    }
-    if(expanded&&data!=null)Dialog(onDismissRequest={expanded=false}){
-        Column(Modifier.fillMaxWidth().fillMaxHeight(.8f).clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surface).padding(18.dp)){
-            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){Text(if(artistTab)"${period}新增歌手" else "${period}新增歌曲",Modifier.weight(1f),fontSize=20.sp,fontWeight=FontWeight.Bold);Text("关闭",Modifier.press{expanded=false},fontSize=13.sp,color=Accent)}
-            LazyColumn(Modifier.weight(1f).padding(top=12.dp)){
-                if(artistTab)itemsIndexed(data.newArtists,key={_,g->g.key}){i,g->WeeklyNewArtistRow(c,g,i){expanded=false;detail?.artist?.invoke(g.title,"new-artist:${g.key}")}}
-                else itemsIndexed(data.newSongs,key={_,p->p.id}){i,p->SongReportRow(c,p,i,p.artist,beforeOpen={expanded=false}){open(p,"new-song:${p.id}")}}
-            }
-        }
-    }
-}
-@Composable private fun WeeklyNewArtistRow(c:DiaryController,g:LibraryGroup,index:Int,click:()->Unit){
-    Row(Modifier.fillMaxWidth().press(click).padding(vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
-        Text("%02d".format(index+1),Modifier.width(40.dp),fontSize=19.sp,color=Muted)
-        Artwork(c,g.image,Modifier.size(49.dp).clip(CircleShape),edge=160)
-        Column(Modifier.weight(1f).padding(horizontal=10.dp)){Text(g.title,fontSize=16.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${g.songs.size}首 · ${shortDuration(g.ms)}",fontSize=12.sp,color=Muted)}
-        Text("${g.plays}次",fontSize=19.sp)
-    }
-}
 
 @Composable internal fun FavoriteHeading(title:String,album:Boolean,choose:(Boolean)->Unit,all:()->Unit){
     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){

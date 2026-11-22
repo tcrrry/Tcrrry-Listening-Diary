@@ -86,11 +86,150 @@ class DiaryDatabaseTest {
         assertEquals(previous,db.currentListeningDay(now,ListeningDayPolicy(ListeningDayMode.AUTO)))
         assertEquals(day,db.currentListeningDay(day.atTime(6,0).atZone(java.time.ZoneOffset.UTC),ListeningDayPolicy(ListeningDayMode.AUTO)))
     }
+    @Test fun compactDiscoveryDoesNotNeedLifetimeProjectionAndRespectsDayBoundary(){
+        val batch=payload();val start=day.atTime(1,0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        batch.getJSONArray("spans").getJSONObject(0).put("start",start).put("end",start+30000);db.ingest(batch)
+        for(hour in listOf(0,5,6)){
+            val policy=ListeningDayPolicy(ListeningDayMode.FIXED,hour);val target=if(hour==0)day else day.minusDays(1)
+            val result=db.periodNewIdentities(target,DiaryRange.DAY,policy,setOf("song"),setOf("歌手"))
+            assertEquals(setOf("song"),result.first);assertEquals(setOf("歌手"),result.second)
+        }
+        val key=DiaryDatabase::class.java.getDeclaredField("projectionKey");key.isAccessible=true
+        assertNull("first-listening query must not build whole ledger",key.get(db))
+    }
+    @Test fun discoveryReaderIsNotBlockedByPeriodProjectionMonitor(){
+        val c=RuntimeEnvironment.getApplication();db.ingest(payload())
+        val projection=DiaryDatabase.projection(c);val discovery=DiaryDatabase.discovery(c)
+        assertNotSame(projection,discovery)
+        val held=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+        val worker=java.util.concurrent.Executors.newFixedThreadPool(2)
+        try{
+            val holder=worker.submit{ synchronized(projection){held.countDown();release.await()} }
+            assertTrue(held.await(3,java.util.concurrent.TimeUnit.SECONDS))
+            val result=worker.submit<Pair<Set<String>,Set<String>>>{discovery.periodNewIdentities(day,DiaryRange.DAY,ListeningDayPolicy(),setOf("song"),setOf("歌手"))}.get(3,java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(setOf("song"),result.first)
+            release.countDown();holder.get(3,java.util.concurrent.TimeUnit.SECONDS)
+        }finally{release.countDown();worker.shutdownNow()}
+    }
+    @Test fun optionalRealBackupMeasuresPersistentDiscoveryReuse(){
+        val path=System.getProperty("diary.statistics.fixture")
+        org.junit.Assume.assumeTrue(path!=null)
+        val input=java.io.File(path!!);assertTrue(input.isFile)
+        db.ingest(JSONObject(input.readText()),true)
+        val date=LocalDate.of(2026,11,20);val policy=ListeningDayPolicy()
+        val report=db.readReport(bounds(date,DiaryRange.WEEK),policy)
+        val songs=report.history.map{it.id}.toSet();val artists=report.history.map{it.artist}.toSet()
+        val first=System.nanoTime();val expected=db.periodNewIdentities(date,DiaryRange.WEEK,policy,songs,artists);val built=System.nanoTime()
+        // Clear only the in-memory projection to emulate a later process; keep ledger/cache.
+        val key=DiaryDatabase::class.java.getDeclaredField("projectionKey");key.isAccessible=true;key.set(db,null)
+        val memory=DiaryDatabase::class.java.getDeclaredField("discoveryMemory");memory.isAccessible=true
+        val compact=memory.get(db)!!;val indexField=compact.javaClass.getDeclaredField("index");indexField.isAccessible=true;val index=indexField.get(compact)
+        val firstField=index.javaClass.getDeclaredField("first");firstField.isAccessible=true
+        val partsField=DiaryDatabase::class.java.getDeclaredField("projected");partsField.isAccessible=true
+        @Suppress("UNCHECKED_CAST") val parts=partsField.get(db) as List<DatedPlay>
+        assertEquals("compact first dates must match full projection",parts.groupBy{it.play.id}.mapValues{(_,v)->v.minOf{it.day}},firstField.get(index))
+        memory.set(db,null)
+        val restored=db.periodNewIdentities(date,DiaryRange.WEEK,policy,songs,artists);val end=System.nanoTime()
+        assertEquals(expected,restored);assertNull("cache hit must not rebuild lifetime projection",key.get(db))
+        val again=System.nanoTime();db.periodNewIdentities(date,DiaryRange.WEEK,policy,songs,artists);val warm=System.nanoTime()
+        println("STATISTICS_REAL_BACKUP buildMs="+(built-first)/1000000+" restoreMs="+(end-built)/1000000+" warmMs="+(warm-again)/1000000+" periodRows="+report.history.size)
+    }
+    @Test fun duplicateSyncAcknowledgesWithoutInvalidatingStatistics(){
+        val prefs=RuntimeEnvironment.getApplication().getSharedPreferences("diary",Context.MODE_PRIVATE)
+        db.ingest(payload());val revision=prefs.getLong("data_revision",0)
+        db.ingest(payload());assertEquals(revision,prefs.getLong("data_revision",0));assertEquals(2,prefs.getLong("sync_serial",0))
+        db.ingest(payload(ms=45000));assertTrue(prefs.getLong("data_revision",0)>revision);assertEquals(45000,report().ms)
+    }
+    @Test fun firstListeningCacheSurvivesCheckpointButInvalidatesEarlierHistory(){
+        val c=RuntimeEnvironment.getApplication();val policy=ListeningDayPolicy(ListeningDayMode.FIXED,5)
+        db.ingest(payload())
+        db.periodNewIdentities(day,DiaryRange.DAY,policy,setOf("song"),setOf("歌手"))
+        val file=java.io.File(c.filesDir,"derived-statistics-v1/"+ArtworkKeys.hash("first-listening-index-v3:$policy")+".bin")
+        assertTrue(file.isFile);val original=file.readBytes()
+        db.ingest(payload(ms=45000))
+        db.periodNewIdentities(day,DiaryRange.DAY,policy,setOf("song"),setOf("歌手"))
+        assertArrayEquals(original,file.readBytes())
+        val earlier=payload(2);val start=day.minusDays(10).atTime(10,0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        earlier.getJSONArray("spans").getJSONObject(0).put("day",day.minusDays(10).toString()).put("start",start).put("end",start+30000)
+        db.ingest(earlier)
+        assertTrue(db.periodNewIdentities(day,DiaryRange.DAY,policy,setOf("song"),setOf("歌手")).first.isEmpty())
+        assertFalse(original.contentEquals(file.readBytes()))
+    }
+    @Test fun discoveryCheckpointAndLaterVisitsReusePersistedIndexAfterMemoryReset(){
+        val c=RuntimeEnvironment.getApplication();val prefs=c.getSharedPreferences("diary",Context.MODE_PRIVATE);val policy=ListeningDayPolicy()
+        db.ingest(payload());db.periodNewIdentities(day,DiaryRange.DAY,policy,setOf("song"),setOf("歌手"))
+        val file=java.io.File(c.filesDir,"derived-statistics-v1/"+ArtworkKeys.hash("first-listening-index-v3:$policy")+".bin");val original=file.readBytes()
+        val firstRevision=prefs.getLong("first_span_revision",0)
+        val later=payload(2);val start=day.plusDays(1).atTime(12,0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        later.getJSONArray("spans").getJSONObject(0).put("day",day.plusDays(1).toString()).put("start",start).put("end",start+30000)
+        db.ingest(later);db.ingest(payload(ms=45000))
+        assertEquals(firstRevision,prefs.getLong("first_span_revision",0))
+        val memory=DiaryDatabase::class.java.getDeclaredField("discoveryMemory");memory.isAccessible=true;memory.set(db,null)
+        assertEquals(setOf("song"),db.periodNewIdentities(day,DiaryRange.DAY,policy,setOf("song"),setOf("歌手")).first)
+        assertArrayEquals("ordinary playback must not invalidate persisted first dates",original,file.readBytes())
+    }
+    @Test fun movingEarliestNativeSpanInvalidatesFirstDates(){
+        val policy=ListeningDayPolicy();db.ingest(payload());db.periodNewIdentities(day,DiaryRange.DAY,policy,setOf("song"),emptySet())
+        val moved=payload(ms=45000);val start=day.plusDays(1).atTime(12,0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        moved.getJSONArray("spans").getJSONObject(0).put("day",day.plusDays(1).toString()).put("start",start).put("end",start+45000);db.ingest(moved)
+        assertTrue(db.periodNewIdentities(day,DiaryRange.DAY,policy,setOf("song"),emptySet()).first.isEmpty())
+        assertEquals(setOf("song"),db.periodNewIdentities(day.plusDays(1),DiaryRange.DAY,policy,setOf("song"),emptySet()).first)
+    }
+    @Test fun previousRankFingerprintIgnoresUnrelatedDaysAndRespectsBoundaryPolicy(){
+        db.ingest(payload());val bound=bounds(day,DiaryRange.DAY);val policy=ListeningDayPolicy()
+        val before=db.rankingCacheStamp(bound,policy)
+        val other=payload(2);val date=day.plusDays(20);val start=date.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        other.getJSONArray("spans").getJSONObject(0).put("day",date.toString()).put("start",start).put("end",start+30000)
+        db.ingest(other);assertEquals(before,db.rankingCacheStamp(bound,policy))
+        assertNotEquals(before,db.rankingCacheStamp(bound,ListeningDayPolicy(ListeningDayMode.FIXED,5)))
+        db.ingest(payload(ms=45000));assertNotEquals(before,db.rankingCacheStamp(bound,policy))
+    }
+    @Test fun collaborationsDoNotRediscoverPreviouslyRecordedStandaloneArtist(){
+        val first=payload();first.getJSONArray("tracks").getJSONObject(0).put("artist","VILLSHANA");db.ingest(first)
+        val next=payload(2);next.getJSONArray("tracks").getJSONObject(0).put("id","collab").put("artist","VILLSHANA & Mahiru")
+        val start=day.plusDays(1).atTime(10,0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        next.getJSONArray("spans").getJSONObject(0).put("track","collab").put("day",day.plusDays(1).toString()).put("start",start).put("end",start+30000);db.ingest(next)
+        assertTrue(db.periodNewIdentities(day.plusDays(1),DiaryRange.DAY,ListeningDayPolicy(),emptySet(),setOf("VILLSHANA & Mahiru")).second.isEmpty())
+    }
+    @Test fun discoveriesRecognizeTheSameRecordingUnderDifferentSourceIds(){
+        db.ingest(payload())
+        fun add(id:String,title:String="歌曲",artist:String="歌手",album:String="专辑",duration:Long=240000,offset:Int):JSONObject {
+            val batch=payload(offset.toLong()+2)
+            batch.getJSONArray("tracks").getJSONObject(0).put("id",id).put("title",title).put("artist",artist).put("album",album).put("duration",duration)
+            val start=day.plusDays(1).atTime(10,offset).atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+            batch.getJSONArray("spans").getJSONObject(0).put("track",id).put("day",day.plusDays(1).toString()).put("start",start).put("end",start+30000)
+            return batch
+        }
+        db.ingest(add("web:same",offset=1))
+        db.ingest(add("different-artist",artist="另一位歌手",offset=2))
+        db.ingest(add("live",title="歌曲 (Live)",offset=3))
+        db.ingest(add("different-length",duration=300000,offset=4))
+        db.ingest(add("missing-album",album="",offset=5))
+        db.ingest(add("missing-duration",duration=0,offset=6))
+        val ids=setOf("web:same","different-artist","live","different-length","missing-album","missing-duration")
+        val found=db.periodNewIdentities(day.plusDays(1),DiaryRange.DAY,ListeningDayPolicy(),ids,emptySet()).first
+        assertFalse("web:same" in found)
+        assertTrue(found.containsAll(ids-"web:same"))
+    }
     @Test fun dayPreviewMatchesCreditedRecordsAcrossFixedBoundary(){
         db.ingest(payload());val policy=ListeningDayPolicy(ListeningDayMode.FIXED,6);val previous=day.minusDays(1)
         val quick=db.readDayPreview(previous,policy)!!.first;val full=db.readReport(bounds(previous,DiaryRange.DAY),policy)
         assertEquals(full.ms,quick.ms);assertEquals(full.plays,quick.plays);assertEquals(full.tracks,quick.tracks);assertEquals(full.segments.map{it.ms},quick.segments.map{it.ms})
         assertNull(db.readDayPreview(day,policy));assertNull(db.readDayPreview(previous,ListeningDayPolicy(ListeningDayMode.AUTO)))
+    }
+    @Test fun localDayScreenMatchesFullReportWithCrossBoundaryPlaybackAndSkipEvents(){
+        db.ingest(payload());db.ingest(eventBatch())
+        val policy=ListeningDayPolicy(ListeningDayMode.FIXED,6)
+        for(date in listOf(day.minusDays(1),day)){
+            val full=db.readReport(bounds(date,DiaryRange.DAY),policy)
+            val local=db.readDayScreen(date,policy)!!.first
+            assertEquals(full.history,local.history)
+            assertEquals(full.ms,local.ms)
+            assertEquals(full.topArtists,local.topArtists)
+            assertEquals(full.manualSkips,local.manualSkips)
+            assertEquals(full.manualSkipsSince,local.manualSkipsSince)
+        }
+        assertNull(db.readDayScreen(day,ListeningDayPolicy(ListeningDayMode.AUTO)))
     }
     @Test fun durationIndexMatchesReportsAndInvalidatesOnImport(){
         val c=RuntimeEnvironment.getApplication();val policy=ListeningDayPolicy(ListeningDayMode.FIXED,6)
@@ -116,6 +255,20 @@ class DiaryDatabaseTest {
             }
         }
         assertNull(PeriodDurationReader.read(c,bounds(day,DiaryRange.DAY),ListeningDayPolicy(ListeningDayMode.AUTO)))
+    }
+    @Test fun dayComparisonClipsYesterdayAtTheMatchingClockTime(){
+        val context=RuntimeEnvironment.getApplication()
+        val batch=payload()
+        val start=day.atTime(5,30).atZone(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        batch.getJSONArray("spans").getJSONObject(0).put("start",start).put("end",start+7200000).put("ms",7200000)
+        db.ingest(batch)
+        val until=java.time.Instant.ofEpochMilli(start+5400000)
+        val policy=ListeningDayPolicy(ListeningDayMode.FIXED,6)
+        val bound=bounds(day,DiaryRange.DAY)
+        assertEquals(3600000L,PeriodDurationReader.read(context,bound,policy,until))
+        assertEquals(3600000L,durationUntil(db.readReport(bound,policy).segments,until))
+        assertEquals(5400000L,PeriodDurationReader.read(context,bound,policy))
+        assertEquals(0L,PeriodDurationReader.read(context,bound,policy,java.time.Instant.ofEpochMilli(start)))
     }
     private fun eventBatch():JSONObject {val at=day.atTime(12,0).atZone(java.time.ZoneId.of("UTC")).toInstant().toEpochMilli();return JSONObject().put("sourceId","phone").put("eventsSince",at-10000).put("events",JSONArray().put(JSONObject().put("event_id","event-1").put("day",day.toString()).put("zone","UTC").put("at",at).put("kind","next").put("from_track","A").put("to_track","B").put("position",60000).put("duration",240000)))}
     @Test fun realEventsAreIdempotentAndNeverChangeListeningTime(){db.ingest(payload());val total=report().ms;val batch=eventBatch();db.ingest(batch);db.ingest(batch);assertEquals(1L,report().manualSkips);assertEquals(total,report().ms);assertNull(db.report(day.minusDays(1),DiaryRange.DAY).toReport().manualSkips);assertEquals(1L,db.report(day,DiaryRange.MONTH).toReport().manualSkips)}

@@ -52,6 +52,6 @@ tasks.register<Zip>("pluginZip") {
     from(listOf("README.md", "THIRD_PARTY_NOTICES.md")) { into("assets/documentation") }
     from("LICENSE") { into("assets/licenses") }
     // Native UI; do not package or initialize the earlier WebView report.
-    archiveFileName = "Listening-Diary-Collector-v1.0.zip"
+    archiveFileName = "Listening-Diary-Collector-v1.0.2.zip"
     destinationDirectory = layout.buildDirectory.dir("dist")
 }

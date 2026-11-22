@@ -39,6 +39,30 @@ internal object AppleAlbumLinks {
     }
 }
 
+/** Resolve artist IDs from an actual catalog song; never guess a same-name artist. */
+internal object AppleArtistLinks {
+    fun fromResponse(response:JSONObject,trackId:String,name:String):String? {
+        val rows=response.optJSONArray("results")?:return null
+        for(i in 0 until rows.length()){
+            val row=rows.optJSONObject(i)?:continue
+            if(row.optString("trackId")!=trackId)continue
+            if(AppleTrackImages.normalized(name)!=AppleTrackImages.normalized(row.optString("artistName")))continue
+            val id=row.optString("artistId")
+            if(id.matches(Regex("[0-9]{3,22}")))return id
+        }
+        return null
+    }
+    fun resolve(art:File,trackId:String,name:String,request:(String)->JSONObject):String? {
+        if(!trackId.matches(Regex("[0-9]{5,22}")))return null
+        for(country in listOf("cn","jp","us")){
+            val id=runCatching{fromResponse(request("https://itunes.apple.com/lookup?id=$trackId&country=$country"),trackId,name)}.getOrNull()?:continue
+            runCatching{art.mkdirs();File(art,ArtworkKeys.hash("apple-identity:$name")+".artist").writeText(id)}
+            return id
+        }
+        return null
+    }
+}
+
 /** Reuses verified local IDs and caches regional album links after a lookup. */
 internal fun openAppleMusic(c:DiaryController, kind:String, play:Play, name:String){
     Thread {
@@ -58,16 +82,23 @@ internal fun openAppleMusic(c:DiaryController, kind:String, play:Play, name:Stri
             "song" -> trackId
             "artist" -> {
                 val cached=runCatching { File(art,ArtworkKeys.hash("apple-identity:$name")+".artist").readText().trim() }.getOrDefault("")
-                cached.ifEmpty { if(matched!=null && AppleTrackImages.artistMatches(name,matched.optString("artistName"))) matched.optString("artistId") else "" }
+                cached.ifEmpty { if(matched!=null && AppleTrackImages.normalized(name)==AppleTrackImages.normalized(matched.optString("artistName"))) matched.optString("artistId") else "" }
+                    .ifEmpty { AppleArtistLinks.resolve(art,trackId,name){address->
+                        val connection=URL(address).openConnection().apply{connectTimeout=2500;readTimeout=2500}
+                        connection.getInputStream().bufferedReader(Charsets.UTF_8).use{JSONObject(it.readText())}
+                    }.orEmpty() }
             }
             "album" -> albumId
             else -> ""
         }
-        val url=albumUrl ?: if(id.matches(Regex("[0-9]{3,22}")) && name.isNotBlank()) {
+        val directUrl=albumUrl ?: if(id.matches(Regex("[0-9]{3,22}")) && name.isNotBlank()) {
             val slug=URLEncoder.encode(name,"UTF-8").replace("+","%20")
             "https://music.apple.com/cn/$kind/$slug/$id"
         } else null
+        val search=directUrl==null&&kind=="artist"&&name.isNotBlank()
+        val url=directUrl?:if(search)"https://music.apple.com/cn/search?term="+URLEncoder.encode(name,"UTF-8").replace("+","%20")else null
         c.activity.runOnUiThread {
+            if(search)Toast.makeText(c.activity,"暂无直接歌手链接，已打开 Apple Music 搜索",Toast.LENGTH_SHORT).show()
             if(url==null) Toast.makeText(c.activity,"暂未找到可确认的 Apple Music 链接",Toast.LENGTH_SHORT).show()
             else try { c.activity.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(url))) }
             catch (_:Exception) { Toast.makeText(c.activity,"无法打开 Apple Music 链接",Toast.LENGTH_SHORT).show() }

@@ -282,7 +282,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
     if(c.lanPaired)Text("日记打开时自动同步；AM++ 采集器运行时也会尝试后台同步。",fontSize=12.sp,color=Muted)
     if(c.lanPaired){
         Row(verticalAlignment=Alignment.CenterVertically){Text("本机：${c.lanName}",Modifier.weight(1f),fontSize=13.sp,color=Muted);TextButton(onClick={editedName=c.lanName;rename=true}){Text("修改名称")}}
-        val synced=c.lanDevices.filter{it.lastSync>0}.map{it.name}+c.browserDevices.map{it.name}
+        val synced=c.lanDevices.filter{it.lastSync>0}.map{it.name}+c.browserDevices.map{it.name}.distinct()
         if(synced.isNotEmpty())Text("已同步设备："+synced.joinToString("、"),fontSize=13.sp,color=Muted)
         val pending=c.lanDevices.filter{it.lastSync<=0}
         if(pending.isNotEmpty())Text("同步组设备："+pending.joinToString("、"){it.name}+"（等待首次直接同步）",fontSize=13.sp,color=Muted)
@@ -323,6 +323,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
 }
 
 @Composable private fun Today(c:DiaryController,b:Backdrop,calendar:()->Unit,settings:()->Unit,open:(Play,String)->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope,onTint:(List<Color>)->Unit,allowAuto:Boolean,summaryVisibility:AnimatedVisibilityScope){
+    val navigationState=rememberSaveableStateHolder()
     val list=rememberLazyListState();val r=c.report
     LaunchedEffect(c.range,c.summary,c.loading,c.foreground,c.demo,c.dataRevision,c.previewMetadataEpoch){
         if(!c.summary&&!c.loading&&(c.foreground||c.demo)){
@@ -350,7 +351,9 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         override suspend fun onPreFling(available:Velocity):Velocity{pullTarget=0f;return Velocity.Zero}
     }}
     val scroll by remember{derivedStateOf{when(list.firstVisibleItemIndex){0->list.firstVisibleItemScrollOffset.toFloat();1->headerHeight+list.firstVisibleItemScrollOffset.toFloat();else->headerHeight+700f}}}
-    AnimatedContent(when{historyOpen->"history";periodHistoryDate!=null->"period-history";artistSheet!=null->"artists";favoritesOpen->"favorites";else->"home"},transitionSpec={
+    var discoveriesOpen by rememberSaveable{mutableStateOf(false)}
+    var discoveryArtists by rememberSaveable{mutableStateOf(false)}
+    AnimatedContent(when{discoveriesOpen->"discoveries";historyOpen->"history";periodHistoryDate!=null->"period-history";artistSheet!=null->"artists";favoritesOpen->"favorites";else->"home"},transitionSpec={
         if(targetState.contains("history")||initialState.contains("history")) (fadeIn(tween(220))+scaleIn(initialScale=.96f,animationSpec=tween(350))) togetherWith fadeOut(tween(180))
         else (fadeIn(tween(220))+slideInHorizontally{if(targetState!="home")it/5 else -it/5}) togetherWith fadeOut(tween(150))
     },label="history navigation"){showHistory->
@@ -358,8 +361,10 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         val historyPrefix=if(showHistory=="period-history")c.range.name else "DAY"
         val historyEnabled=c.periodSwipePosition==null
         val historyMotion=remember(shared,historyScope,historyPrefix,historyEnabled){HistoryMotion(shared,historyScope,historyPrefix,historyEnabled)}
+        navigationState.SaveableStateProvider(showHistory){
         CompositionLocalProvider(LocalHistoryMotion provides historyMotion){
-        if(showHistory=="history")key(secondaryEntry,c.day,c.range){HistoryPage(c,calendar,settings,{historyOpen=false},open,shared,visibility)}
+        if(showHistory=="discoveries")NewListeningPage(c,{discoveriesOpen=false},open,discoveryArtists)
+        else if(showHistory=="history")key(secondaryEntry,c.day,c.range){HistoryPage(c,calendar,settings,{historyOpen=false},open,shared,visibility)}
         else if(showHistory=="period-history")key(secondaryEntry,c.day,c.range){
             val snapshot by produceState<PeriodComputed?>(periodHistorySnapshot,c.report,c.day,c.range){if(value==null||value?.report!==c.report)value=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){computePeriod(c.report,c.day,c.range)}}
             val computed=snapshot
@@ -471,7 +476,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         // Keep the exiting page mounted with its own data until the transition disposes it.
         val r=pageReport
         if(r.history.isEmpty()&&((c.range==period&&c.loading)||(c.range!=period&&!dragReady))) PeriodLoadingPage(c,b,period,calendar,settings)
-        else if(period!=DiaryRange.DAY)PeriodReportPage(c,b,calendar,settings,open,shared,visibility,onTint,allowAuto&&c.range==period&&c.periodSwipePosition==null,period,r,{album->secondaryEntry++;favoritesAlbum=album;favoritesOpen=true},{name->if(name.isBlank()){secondaryEntry++;artistSheet=""} else detailActions?.artist?.invoke(name,"period-artist:${period.name}:$name")},periodVisibility,summaryVisibility,cached?.computed?.takeIf{cached.report===r||(c.range==period&&!c.loading&&cached.revision==c.dataRevision)}?:previewComputed?.takeIf{it.report===r}?:committedComputed?.takeIf{it.report===r},{date,computed->secondaryEntry++;periodHistorySnapshot=computed;periodHistoryDate=date?.toString()?:""})
+        else if(period!=DiaryRange.DAY)PeriodReportPage(c,b,calendar,settings,open,shared,visibility,onTint,allowAuto&&c.range==period&&c.periodSwipePosition==null,period,r,{album->secondaryEntry++;favoritesAlbum=album;favoritesOpen=true},{name->if(name.isBlank()){secondaryEntry++;artistSheet=""} else detailActions?.artist?.invoke(name,"period-artist:${period.name}:$name")},periodVisibility,summaryVisibility,cached?.computed?.takeIf{cached.report===r||(c.range==period&&!c.loading&&cached.revision==c.dataRevision)}?:previewComputed?.takeIf{it.report===r}?:committedComputed?.takeIf{it.report===r},{date,computed->secondaryEntry++;periodHistorySnapshot=computed;periodHistoryDate=date?.toString()?:""},allNew={discoveryArtists=it;discoveriesOpen=true})
         else {
         val covers=remember(r.history){CoverCarousel.history(r.history)}
         val ranked=remember(r.history){sortedPlays(r.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT).take(5)}
@@ -490,7 +495,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
             }}
             sheetItem("summary",top=true){
                 ListeningStats(r,with(shared){Modifier.sharedBounds(rememberSharedContentState("period-stats"),periodVisibility,enter=fadeIn(tween(120)),exit=fadeOut(tween(120)),boundsTransform={_,_->tween(320,easing=LinearEasing)})}.padding(horizontal=20.dp).padding(bottom=12.dp)){c.notice=it}
-                if(c.showingCached||c.loading&&r.history.isEmpty())Text(if(c.showingCached)"正在更新记录…" else "正在读取所选日期…",Modifier.padding(horizontal=20.dp).padding(bottom=8.dp),fontSize=12.sp,color=Muted)
+                if(c.loading&&r.history.isEmpty())Text("正在读取所选日期…",Modifier.padding(horizontal=20.dp).padding(bottom=8.dp),fontSize=12.sp,color=Muted)
                 if(r.importedRows>0)Text(if(r.missingTitles>0)"含 Apple 导入记录 · ${r.missingTitles}次未提供曲名（保留时长与历史）"else "含 Apple 导入记录",Modifier.padding(horizontal=20.dp).padding(bottom=8.dp).press(settings),fontSize=11.sp,color=Muted)
                 if(!c.loading&&(c.demo||c.error!=null||(r.lastSync==0L&&r.history.isEmpty())))Text(when{c.demo->"交互演示 · 示例记录";c.error!=null->c.error!!;else->"等待采集器同步 · 点击连接"},Modifier.padding(horizontal=20.dp).padding(bottom=10.dp).press(settings),fontSize=11.sp,color=Muted)
             }
@@ -516,6 +521,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
                     Spacer(Modifier.height(18.dp))
                 }
             }
+            if(r.history.isNotEmpty())sheetItem("daily-new"){NewListeningSection(c,DiaryRange.DAY,r,open){discoveryArtists=it;discoveriesOpen=true}}
             if(r.topArtists.isNotEmpty())sheetItem("artists"){
                 Column(Modifier.padding(horizontal=17.dp)){
                     MemoryHeading("常听歌手",toAll={secondaryEntry++;artistSheet=""});Spacer(Modifier.height(15.dp))
@@ -530,6 +536,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         }
         }
         }
+    }
     }
     }
     if(rhythmSheet)SessionSheet(c,r){rhythmSheet=false}

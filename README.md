@@ -4,16 +4,27 @@
 
 把音乐留在日记里。听歌日记由 Android App、AM++ 采集插件和可选的 **Apple Music 网页采集扩展**组成，在本机展示听歌历史、统计、偏好与分享图片。
 
-## 下载 v1.3
+## 下载 v1.3.1
 
-[![下载听歌日记 APK](docs/download-app.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3/Listening-Diary-v1.3.apk)
-[![下载 AM++ 采集器 ZIP](docs/download-collector.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.0/Listening-Diary-Collector-v1.0.zip)
+[![下载听歌日记 APK](docs/download-app.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3.1/Listening-Diary-v1.3.1.apk)
+[![下载 AM++ 采集器 ZIP](docs/download-collector.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3.1/Listening-Diary-Collector-v1.0.2.zip)
 
-[![下载网页采集扩展 ZIP](docs/download-web.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3/Listening-Diary-Web-Extension-v0.6.1.zip)
+[![下载网页采集扩展 ZIP](docs/download-web.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3.1/Listening-Diary-Web-Extension-v0.6.2.zip)
 
-[查看发布页与更新说明](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3) · [获取 AM++ 整合安装包](https://github.com/tcrrry/AMPP-Lyrics)
+[查看发布页与更新说明](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3.1) · [获取 AM++ 整合安装包](https://github.com/tcrrry/AMPP-Lyrics)
 
-**手机听歌**：安装 APK，并在 AM++ 中导入采集器 ZIP；已经安装 v1.0 采集器无需重复导入。**网页听歌**：额外使用下方网页扩展，也可仅用扩展本机记录。App 要求 Android 12 或更高版本。
+**手机听歌**：安装 APK，并在 AM++ 中导入采集器 ZIP；本次请一并覆盖更新采集器，以启用 7.0.3 的主动切歌记录。**网页听歌**：额外使用下方网页扩展，也可仅用扩展本机记录。App 要求 Android 12 或更高版本。
+
+## v1.3.1 更新
+
+- 加快首页读取，优化新增歌曲、歌手及历史排名的本地缓存；普通重开和旧歌时长更新复用结果，减少全历史扫描和重复刷新。
+- “这一天的声音”在当天按昨天同期比较；日、周、月、年详情提供排名变化及新增记录，返回保留进入时的位置，本日新增不显示具体时间。
+- 改进跨来源同一录音和合作歌手署名的新增判断；歌手直达链接补查，无法确认时提供 Apple Music 搜索。
+- 软件更新检查增加备用查询路径；切歌统计仅展示已采集记录，不再估算未采集次数。
+- 采集器 v1.0.2 明确适配 Apple Music 7.0.3（1626），兼容结构一致的后续版本；不匹配或挂钩失败时回退备用采集。
+- 网页扩展 v0.6.2 修复首次并发配对／同步可能创建重复 Chrome 身份的问题。
+
+首次建立索引、补入更早历史或资料变化时仍可能需要重新整理。没有采集到的历史主动切歌无法补算。
 
 ## v1.3 更新
 
@@ -30,8 +41,8 @@
 
 ## 安装与更新
 
-1. 安装或覆盖安装 `Listening-Diary-v1.3.apk`，打开日记，在设置中连接 AM++ 采集器并授权。
-2. 打开 AM++ 的插件管理器，导入 `Listening-Diary-Collector-v1.0.zip` 并启用；如宿主提示重启，请重新打开 AM++。
+1. 安装或覆盖安装 `Listening-Diary-v1.3.1.apk`，打开日记，在设置中连接 AM++ 采集器并授权。
+2. 打开 AM++ 的插件管理器，导入 `Listening-Diary-Collector-v1.0.2.zip` 并启用；如宿主提示重启，请重新打开 AM++。
 3. 正常播放歌曲后打开日记查看。插件在 AM++ 运行时记录，App 不需要一直打开；首次同步或补传旧记录可能需要一点时间。
 
 从预览版升级时覆盖安装 App、覆盖导入同 ID 的插件，保留已有记录和配置。不要先卸载旧 App、删除插件或清除数据。建议在日记设置中导出完整 JSON 备份。
@@ -60,7 +71,7 @@ App 和插件通过本机授权连接，不上传听歌历史到项目服务器�
 
 ## 兼容性
 
-采集器面向 AM++ 中的 Apple Music；不是通用系统播放器监听器。针对 Apple Music 1609 和 1613 有原生读取适配；其他版本使用 MediaSession 备用方式，具体记录内容取决于系统与播放器提供的信息。无法补算过去未记录的设备或播放数据。
+采集器面向 AM++ 中的 Apple Music；不是通用系统播放器监听器。明确适配 Apple Music 1609、1613、1622、1626（7.0.3）。未知版本仅在已知接口结构唯一匹配时启用原生监听，否则使用 MediaSession 备用方式；不能保证未来所有版本自动兼容。主动切歌只记录已观察并确认的播放命令，备用采集不推测次数。具体记录内容取决于系统与播放器提供的信息。无法补算过去未记录的设备或播放数据。
 
 ## 源码与构建
 

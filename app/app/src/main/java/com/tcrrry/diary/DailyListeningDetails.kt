@@ -185,6 +185,14 @@ internal fun periodSummaryComparisonBounds(day:LocalDate,today:LocalDate,range:D
 }
 
 internal fun dailyDurationDelta(current:Long,previous:Long):String = periodDurationDelta(current,previous,"昨天")
+internal fun durationUntil(segments:List<Play>,until:java.time.Instant):Long {
+    val cutoff=until.toEpochMilli()
+    return segments.sumOf { play ->
+        val end=minOf(play.end,cutoff)
+        if(end<=play.start||play.end<=play.start)0L
+        else (play.ms*((end-play.start).toDouble()/(play.end-play.start))).toLong()
+    }
+}
 internal fun periodDurationDelta(current:Long,previous:Long,previousName:String):String {
     val delta=current-previous
     if(delta==0L)return "与${previousName}时长相同"
@@ -206,14 +214,35 @@ private data class ListeningSummaryStats(val first:Play?,val hours:List<Long>,va
     val hours=stats?.hours?:List(24){0L}
     val peak=remember(hours){hours.indices.maxByOrNull{hours[it]}?:0}
     val sessions=stats?.sessions
-    val previousName=when(range){DiaryRange.DAY->"昨天";DiaryRange.WEEK->"上周同期";DiaryRange.MONTH->"上月同期";DiaryRange.YEAR->"去年同期"}
-    val comparison by key(c.day,range,c.dayPolicy,c.demo){produceState<Pair<Long?,Boolean>>(null to true,c.dataRevision){
+    var dailySameTime by remember(c.day,range,c.dayPolicy){mutableStateOf(false)}
+    var comparisonMinute by remember{mutableLongStateOf(System.currentTimeMillis()/60000)}
+    LaunchedEffect(range,c.foreground){
+        if(range==DiaryRange.DAY&&c.foreground){
+            while(true){kotlinx.coroutines.delay(60000);comparisonMinute=System.currentTimeMillis()/60000}
+        }
+    }
+    val previousName=when(range){DiaryRange.DAY->if(dailySameTime)"昨天同期"else "昨天";DiaryRange.WEEK->"上周同期";DiaryRange.MONTH->"上月同期";DiaryRange.YEAR->"去年同期"}
+    val comparison by key(c.day,range,c.dayPolicy,c.demo){produceState<Pair<Long?,Boolean>>(null to true,c.dataRevision,if(range==DiaryRange.DAY)comparisonMinute else 0L){
         try{
             val previousDay=periodShift(c.day,range,-1)
-            val comparisonBounds=periodSummaryComparisonBounds(c.day,c.currentListeningDay(),range)
-            if(!c.demo){val cached=withContext(Dispatchers.IO){DailyDurationCache.read(c.activity,c.dayPolicy,comparisonBounds)};if(cached!=null)value=cached to true}
-            if(!c.demo&&c.syncing)kotlinx.coroutines.withTimeoutOrNull(8000){snapshotFlow{c.syncing}.first{!it}}
-            val previousMs=if(c.demo)withContext(Dispatchers.Default){val report=periodDemoReport(previousDay,range);if(range!=DiaryRange.DAY)report.dayTotals.filterKeys{it>=comparisonBounds.from&&it<=comparisonBounds.to}.values.sum() else report.ms}else withContext(Dispatchers.IO){PeriodDurationReader.read(c.activity,comparisonBounds,c.dayPolicy)?:DiaryDatabase.projection(c.activity).durationForBounds(comparisonBounds,c.dayPolicy)}
+            val now=java.time.ZonedDateTime.now()
+            val today=c.currentListeningDay(now)
+            val comparisonBounds=periodSummaryComparisonBounds(c.day,today,range)
+            val until=if(range==DiaryRange.DAY&&c.day==today)now.minusDays(1).toInstant()else null
+            dailySameTime=until!=null
+            if(!c.demo&&until==null){val cached=withContext(Dispatchers.IO){DailyDurationCache.read(c.activity,c.dayPolicy,comparisonBounds)};if(cached!=null)value=cached to true}
+            if(!c.demo&&c.syncing&&(range!=DiaryRange.DAY||c.dayPolicy.mode==ListeningDayMode.AUTO))kotlinx.coroutines.withTimeoutOrNull(8000){snapshotFlow{c.syncing}.first{!it}}
+            val previousMs=if(c.demo)withContext(Dispatchers.Default){
+                val report=periodDemoReport(previousDay,range)
+                if(until!=null)durationUntil(report.segments,until)
+                else if(range!=DiaryRange.DAY)report.dayTotals.filterKeys{it>=comparisonBounds.from&&it<=comparisonBounds.to}.values.sum()else report.ms
+            }else withContext(Dispatchers.IO){
+                PeriodDurationReader.read(c.activity,comparisonBounds,c.dayPolicy,until)?:run {
+                    val db=DiaryDatabase.projection(c.activity)
+                    if(until!=null)durationUntil(db.readReportVersioned(comparisonBounds,c.dayPolicy).first.segments,until)
+                    else db.durationForBounds(comparisonBounds,c.dayPolicy)
+                }
+            }
             value=previousMs to false
         }catch(e:kotlinx.coroutines.CancellationException){throw e}catch(_:Exception){value=null to false}
     }}

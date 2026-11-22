@@ -39,15 +39,32 @@ internal fun libraryAlbumGroups(albums:List<AlbumStat>):List<LibraryGroup> = alb
     val currentSongRanks=remember(songs){songs.mapIndexed{i,p->p.id to i+1}.toMap()}
     val currentGroupRanks=remember(groups){groups.mapIndexed{i,g->g.key to i+1}.toMap()}
     val oldRanks by produceState<LibraryPreviousRanks?>(null,c.day,c.range,c.dayPolicy,c.demo,c.dataRevision,artists,artistFilter,c.summary){
-        if(c.summary||c.range==DiaryRange.DAY){value=null;return@produceState}
+        if(c.summary){value=null;return@produceState}
         value=null
         try{
-            val previous=if(c.demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(c.day,c.range,-1),c.range)}else withContext(Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(periodShift(c.day,c.range,-1),c.range),c.dayPolicy).first}
+            val previousBounds=bounds(periodShift(c.day,c.range,-1),c.range)
+            val cacheKey="ranking-v1:$previousBounds:${c.dayPolicy}:$artists:$artistFilter"
+            val stamp=if(c.demo)null else withContext(Dispatchers.IO){DiaryDatabase.get(c.activity).rankingCacheStamp(previousBounds,c.dayPolicy)}
+            if(stamp!=null){
+                val saved=withContext(Dispatchers.IO){DerivedStatisticsCache.read(c.activity,cacheKey,stamp) as? LibraryPreviousRanks}
+                if(saved!=null){value=saved;return@produceState}
+            }
+            val previous=if(c.demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(c.day,c.range,-1),c.range)}else withContext(Dispatchers.IO){
+                val day=periodShift(c.day,c.range,-1)
+                val local=if(c.range==DiaryRange.DAY)DiaryDatabase.get(c.activity).readDayScreen(day,c.dayPolicy)?.first else null
+                local?:DiaryDatabase.projection(c.activity).readReportVersioned(bounds(day,c.range),c.dayPolicy).first
+            }
             value=withContext(Dispatchers.Default){
                 val scoped=if(artistFilter==null)previous else previous.copy(history=previous.history.filter{it.artist==artistFilter},segments=previous.segments.filter{it.artist==artistFilter})
                 val oldSongs=sortedPlays(scoped.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT).mapIndexed{i,p->p.id to i+1}.toMap()
                 val oldGroups=libraryGroups(scoped,artists).mapIndexed{i,g->g.key to i+1}.toMap()
                 LibraryPreviousRanks(oldSongs,oldGroups)
+            }
+            val result=value
+            if(stamp!=null&&result!=null)withContext(Dispatchers.IO){
+                if(stamp==DiaryDatabase.get(c.activity).rankingCacheStamp(previousBounds,c.dayPolicy)){
+                    DerivedStatisticsCache.write(c.activity,cacheKey,stamp,result)
+                }
             }
         }catch(e:CancellationException){throw e}catch(_:Exception){value=null}
     }
@@ -97,7 +114,7 @@ internal fun libraryAlbumGroups(albums:List<AlbumStat>):List<LibraryGroup> = alb
         }
     }
 }
-private data class LibraryPreviousRanks(val songs:Map<String,Int>,val groups:Map<String,Int>)
+private data class LibraryPreviousRanks(val songs:Map<String,Int>,val groups:Map<String,Int>):java.io.Serializable
 @Composable private fun LibrarySong(c:DiaryController,p:Play,key:String,rank:Int,open:(Play,String)->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope,rankChange:RankChange?=null){
     Row(Modifier.fillMaxWidth().testTag("library-song:$key").clip(RoundedCornerShape(15.dp)).press{open(p,"library:$key")}.padding(horizontal=10.dp,vertical=11.dp),verticalAlignment=Alignment.CenterVertically){
         Column(Modifier.width(38.dp)){Text("$rank".padStart(2,'0'),fontSize=14.sp,color=Muted);RankChangeLabel(rankChange)}

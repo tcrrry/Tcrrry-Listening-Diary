@@ -7,12 +7,12 @@ import dev.amenhancer.plugin.api.*;
 import java.lang.reflect.*;
 import java.util.*;
 
-/** Read-only, exact 1609 contract. No host method replacement and no player controls. */
+/** Observes confirmed playback commands after validating a complete host contract. */
 final class NativeProbe implements AutoCloseable {
     interface Listener {void sample(MediaMetadata metadata,PlaybackState state);}
     interface Events {void confirmed(SkipTracker.Event event);}
     private final Events events;private final SkipTracker skips=new SkipTracker();private volatile long observedSince;
-    private String converterName;private boolean eventHooksReady;
+    private NativeHostContract contract;private boolean eventHooksReady;
     long observedSince(){return observedSince;}
     private final PluginContext context;private final Listener listener;private final Handler main=new Handler(Looper.getMainLooper());
     private final List<PluginRegistration> hooks=new ArrayList<>();
@@ -20,21 +20,22 @@ final class NativeProbe implements AutoCloseable {
     private Class<?> serviceType,controllerType,queueType;
     NativeProbe(PluginContext c,Listener l,Events events){context=c;listener=l;this.events=events;}
     void install(){
-        long version=context.getHostVersionCode();if(version!=1609&&version!=1613)return;
-        converterName=version==1613?"com.apple.android.music.player.M":"com.apple.android.music.player.O";
+        if(closed||contract!=null)return;
+        NativeHostContract resolved=NativeHostContract.resolve(context.getHostClassLoader(),context.getHostVersionCode());
+        if(resolved==null){context.log("Diary: host structure not verified; using MediaSession (host "+context.getHostVersionCode()+")",null);return;}
+        contract=resolved;
         try{
-            ClassLoader l=context.getHostClassLoader();serviceType=l.loadClass("com.apple.android.music.player.MediaPlaybackService");controllerType=l.loadClass("com.apple.android.music.playback.controller.MediaPlayerController");queueType=l.loadClass("com.apple.android.music.playback.model.PlayerQueueItem");
-            // Verify the exact profile before installing hooks; unknown versions stay on MediaSession.
-            serviceType.getDeclaredField("x");serviceType.getDeclaredField("Q");serviceType.getDeclaredField("M");
-            Class<?> convert=l.loadClass(converterName);convert.getMethod("f",controllerType,queueType);convert.getMethod("b",l.loadClass("z3.y"));
-            Class<?> local=l.loadClass("com.apple.android.music.playback.controller.LocalMediaPlayerController");
-            installCommand(local.getDeclaredMethod("skipToNextItem"),"next");
-            installCommand(local.getDeclaredMethod("skipToPreviousItem"),"previous");
-            installCommand(local.getDeclaredMethod("skipToQueueItemWithId",long.class),"queue");eventHooksReady=true;
-            for(Method m:serviceType.getDeclaredMethods())if(m.getName().equals("onCreate")||m.getName().equals("onStartCommand")||m.getName().equals("handleMessage"))hooks.add(context.getHooks().observe(m,new PluginObserver(){@Override public void after(PluginObservation c){if(c.getThrowable()==null&&!closed&&(service!=c.getReceiver()||controller==null))main.post(()->adopt(c.getReceiver()));}}));
-        }catch(Exception e){context.log("Diary: native observer unavailable; using MediaSession",null);}
+            installCommand(resolved.next,"next");installCommand(resolved.previous,"previous");installCommand(resolved.select,"queue");
+            for(Method m:resolved.lifecycle)hooks.add(context.getHooks().observe(m,new PluginObserver(){@Override public void after(PluginObservation c){if(c.getThrowable()==null&&!closed&&(service!=c.getReceiver()||controller==null))main.post(()->adopt(c.getReceiver()));}}));
+            serviceType=resolved.service;controllerType=resolved.controller;queueType=resolved.queue;eventHooksReady=true;
+            android.util.Log.i("DiarySkip","Contract verified host="+context.getHostVersionCode()+" converter="+resolved.converterName+" mode="+(resolved.explicitVersion?"explicit":"structural"));
+        }catch(Exception|LinkageError e){
+            for(PluginRegistration registration:hooks)try{registration.close();}catch(Exception ignored){}
+            hooks.clear();contract=null;serviceType=null;controllerType=null;queueType=null;eventHooksReady=false;
+            context.log("Diary: native observer installation rolled back; using MediaSession",null);
+        }
     }
-    private String trackId(Object player,Object queue)throws Exception{Class<?> convert=context.getHostClassLoader().loadClass(converterName);Object raw=convert.getMethod("f",controllerType,queueType).invoke(null,player,queue);Object item=convert.getMethod("b",context.getHostClassLoader().loadClass("z3.y")).invoke(null,raw);return item==null?"":String.valueOf(call(item,"getId"));}
+    private String trackId(Object player,Object queue)throws Exception{Object raw=contract.convert.invoke(null,player,queue);Object item=contract.toItem.invoke(null,raw);return item==null?"":String.valueOf(call(item,"getId"));}
     private void installCommand(Method method,String kind){
         hooks.add(context.getHooks().observe(method,new PluginObserver(){
             private final ThreadLocal<SkipTracker.Command> frame=new ThreadLocal<>();
@@ -46,25 +47,25 @@ final class NativeProbe implements AutoCloseable {
     private static Object field(Object o,String name)throws Exception{Field f=o.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(o);}
     private static Object call(Object o,String name)throws Exception{Class<?> type=o.getClass();while(type!=null){try{Method m=type.getDeclaredMethod(name);m.setAccessible(true);return m.invoke(o);}catch(NoSuchMethodException e){type=type.getSuperclass();}}throw new NoSuchMethodException(name);}
     private static String text(Object o,String name){try{Object v=call(o,name);return v instanceof String?(String)v:"";}catch(Exception e){return "";}}
-    private void adopt(Object s){if(closed)return;synchronized(this){if(service==s&&controller!=null)return;service=s;}try{Handler h=(Handler)field(s,"x");if(h!=null)h.post(()->attach(s,h));}catch(Exception ignored){}}
-    private void attach(Object s,Handler h){if(closed||service!=s)return;try{Object found=field(field(s,"Q"),"h");if(found==null||found==controller)return;detach();controller=found;owner=h;Class<?> type=context.getHostClassLoader().loadClass("com.apple.android.music.playback.controller.MediaPlayerController$Listener");callback=Proxy.newProxyInstance(type.getClassLoader(),new Class<?>[]{type},(proxy,m,args)->{String n=m.getName();if(n.equals("hashCode"))return System.identityHashCode(proxy);if(n.equals("equals"))return proxy==args[0];if(n.equals("toString"))return "Listening Diary observer";if(n.equals("onCurrentItemChanged")||n.equals("onMetadataUpdated")||n.equals("onPlaybackStateChanged")||n.equals("onSeekToPosition")||n.equals("onBufferingStateChanged")||n.equals("onPlayerStateRestored"))sample();return null;});controllerType.getMethod("addListener",type).invoke(found,callback);read();}catch(Exception ignored){}}
+    private void adopt(Object s){if(closed)return;synchronized(this){if(service==s&&controller!=null)return;service=s;}try{Handler h=(Handler)contract.handler.get(s);if(h!=null)h.post(()->attach(s,h));}catch(Exception ignored){}}
+    private void attach(Object s,Handler h){if(closed||service!=s)return;try{Object found=contract.activeController.get(contract.manager.get(s));if(found==null||found==controller)return;detach();controller=found;owner=h;Class<?> type=contract.listener;callback=Proxy.newProxyInstance(type.getClassLoader(),new Class<?>[]{type},(proxy,m,args)->{String n=m.getName();if(n.equals("hashCode"))return System.identityHashCode(proxy);if(n.equals("equals"))return proxy==args[0];if(n.equals("toString"))return "Listening Diary observer";if(n.equals("onCurrentItemChanged")||n.equals("onMetadataUpdated")||n.equals("onPlaybackStateChanged")||n.equals("onSeekToPosition")||n.equals("onBufferingStateChanged")||n.equals("onPlayerStateRestored"))sample();return null;});contract.addListener.invoke(found,callback);read();}catch(Exception ignored){}}
     void sample(){Handler h=owner;if(h!=null&&!closed)h.post(this::read);}
     // read() posts its observation first; completion follows it on the same main queue.
     void sample(Runnable complete){Handler h=owner;if(h!=null&&!closed)h.post(()->{read();main.post(complete);});else main.post(complete);}
     private void read(){if(closed||controller==null)return;try{
         Object queue=call(controller,"getCurrentItem");if(queue==null)return;
-        Class<?> convert=context.getHostClassLoader().loadClass(converterName);Object raw=convert.getMethod("f",controllerType,queueType).invoke(null,controller,queue);Object item=convert.getMethod("b",context.getHostClassLoader().loadClass("z3.y")).invoke(null,raw);if(item==null)return;
+        Object raw=contract.convert.invoke(null,controller,queue);Object item=contract.toItem.invoke(null,raw);if(item==null)return;
         Object media=call(queue,"getItem");String id=String.valueOf(call(item,"getId"));
         MediaMetadata metadata=new MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_MEDIA_ID,id).putString(MediaMetadata.METADATA_KEY_TITLE,text(media,"getTitle")).putString(MediaMetadata.METADATA_KEY_ARTIST,text(media,"getArtistName")).putString(MediaMetadata.METADATA_KEY_ALBUM,text(media,"getAlbumTitle")).putLong(MediaMetadata.METADATA_KEY_DURATION,Math.max(0,((Number)call(controller,"getDuration")).longValue())).build();
-        boolean playing=Boolean.TRUE.equals(call(field(service,"M"),"isPlaying")),buffering=Boolean.TRUE.equals(call(controller,"isBuffering"));float speed=((Number)call(controller,"getPlaybackRate")).floatValue();long position=Math.max(0,((Number)call(controller,"getCurrentPosition")).longValue());
+        boolean playing=Boolean.TRUE.equals(contract.isPlaying.invoke(contract.player.get(service))),buffering=Boolean.TRUE.equals(call(controller,"isBuffering"));float speed=((Number)call(controller,"getPlaybackRate")).floatValue();long position=Math.max(0,((Number)call(controller,"getCurrentPosition")).longValue());
         PlaybackState state=new PlaybackState.Builder().setState(buffering?PlaybackState.STATE_BUFFERING:playing?PlaybackState.STATE_PLAYING:PlaybackState.STATE_PAUSED,position,speed,SystemClock.elapsedRealtime()).build();
         long queueId=((Number)call(queue,"getPlaybackQueueId")).longValue();long observedAt=SystemClock.elapsedRealtime();
         main.post(()->{if(!closed){
-            if(eventHooksReady&&observedSince==0){android.content.SharedPreferences p=context.getApplication().getSharedPreferences("com.tcrrry.listeningdiary",0);observedSince=p.getLong("events_since",0);if(observedSince==0){observedSince=System.currentTimeMillis();p.edit().putLong("events_since",observedSince).apply();}}
-            SkipTracker.Event event=skips.observe(id,queueId,position,observedAt);if(event!=null)events.confirmed(event);
+            if(eventHooksReady&&observedSince==0){android.content.SharedPreferences p=context.getApplication().getSharedPreferences("com.tcrrry.listeningdiary",0);observedSince=p.getLong("events_since",0);if(observedSince==0){observedSince=System.currentTimeMillis();p.edit().putLong("events_since",observedSince).apply();}android.util.Log.i("DiarySkip","Observer active for host "+context.getHostVersionCode());}
+            SkipTracker.Event event=skips.observe(id,queueId,position,observedAt);if(event!=null){events.confirmed(event);android.util.Log.i("DiarySkip","Confirmed command: "+event.command.kind);}
             listener.sample(metadata,state);
         }});
     }catch(Exception ignored){}}
-    private void detach(){if(controller!=null&&callback!=null)try{controllerType.getMethod("removeListener",callback.getClass().getInterfaces()[0]).invoke(controller,callback);}catch(Exception ignored){}controller=null;callback=null;}
+    private void detach(){if(controller!=null&&callback!=null)try{contract.removeListener.invoke(controller,callback);}catch(Exception ignored){}controller=null;callback=null;}
     @Override public void close(){closed=true;skips.reset();for(PluginRegistration h:hooks)try{h.close();}catch(Exception ignored){}hooks.clear();Handler h=owner;if(h!=null)h.post(this::detach);service=null;main.removeCallbacksAndMessages(null);}
 }

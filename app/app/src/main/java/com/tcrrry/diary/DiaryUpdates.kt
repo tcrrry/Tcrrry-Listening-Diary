@@ -15,6 +15,7 @@ import kotlinx.coroutines.*
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URI
 
 internal object DiaryUpdateRules {
     const val repository="tcrrry/Tcrrry-Listening-Diary"
@@ -31,6 +32,41 @@ internal object DiaryUpdateRules {
         val data=JSONObject(body)
         require(!data.optBoolean("draft")&&!data.optBoolean("prerelease"))
         return data.getString("tag_name").also{require(version(it)!=null)}
+    }
+    fun redirectTag(location:String?):String? {
+        val raw=location ?: return null
+        val uri=runCatching { URI(raw) }.getOrNull() ?: return null
+        if(uri.isAbsolute && (uri.scheme != "https" || !uri.host.equals("github.com",ignoreCase=true) || uri.port != -1 || uri.userInfo != null))return null
+        if(!uri.isAbsolute && uri.rawAuthority!=null)return null
+        if(uri.rawQuery!=null || uri.rawFragment!=null)return null
+        val prefix="/$repository/releases/tag/"
+        val path=uri.rawPath ?: return null
+        if(!path.startsWith(prefix))return null
+        return path.removePrefix(prefix).takeIf { version(it)!=null }
+    }
+}
+
+internal object DiaryReleaseLookup {
+    private fun connection(url:String):HttpURLConnection=(URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout=5000;readTimeout=8000;instanceFollowRedirects=false
+        setRequestProperty("Accept","application/vnd.github+json")
+        setRequestProperty("User-Agent","Tcrrry-Listening-Diary/${BuildConfig.VERSION_NAME}")
+    }
+    fun latest():String {
+        val api=runCatching {
+            val c=connection("https://api.github.com/repos/${DiaryUpdateRules.repository}/releases/latest")
+            try {
+                check(c.responseCode==200) { "API HTTP ${c.responseCode}" }
+                DiaryUpdateRules.parse(c.inputStream.bufferedReader().use { it.readText().also { text->check(text.length<=256*1024) } })
+            } finally { c.disconnect() }
+        }
+        api.getOrNull()?.let{return it}
+        android.util.Log.w("DiaryUpdates","API lookup failed: ${api.exceptionOrNull()?.javaClass?.simpleName}")
+        val c=connection("https://github.com/${DiaryUpdateRules.repository}/releases/latest")
+        return try {
+            check(c.responseCode in listOf(301,302,303,307,308)) { "Release redirect HTTP ${c.responseCode}" }
+            checkNotNull(DiaryUpdateRules.redirectTag(c.getHeaderField("Location"))) { "Invalid release redirect" }
+        } finally { c.disconnect() }
     }
 }
 
@@ -59,13 +95,10 @@ internal class DiaryUpdateChecker(private val activity:Activity,private val scop
         checking=true;if(manual)message="正在检查更新…"
         prefs.edit().putLong("checked",now).apply()
         scope.launch {
-            val result=withContext(Dispatchers.IO){runCatching {
-                val connection=URL("https://api.github.com/repos/${DiaryUpdateRules.repository}/releases/latest").openConnection() as HttpURLConnection
-                try{connection.connectTimeout=5000;connection.readTimeout=8000;connection.instanceFollowRedirects=false;connection.setRequestProperty("Accept","application/vnd.github+json");connection.setRequestProperty("User-Agent","Tcrrry-Listening-Diary/${BuildConfig.VERSION_NAME}");check(connection.responseCode==200);val body=connection.inputStream.bufferedReader().use{it.readText().also{text->check(text.length<=256*1024)}};DiaryUpdateRules.parse(body)}finally{connection.disconnect()}
-            }}
+            val result=withContext(Dispatchers.IO){runCatching { DiaryReleaseLookup.latest() }}
             checking=false
             val tag=result.getOrNull()
-            if(tag==null){if(manual)message="检查失败，请稍后重试";return@launch}
+            if(tag==null){android.util.Log.w("DiaryUpdates","Release lookup failed: ${result.exceptionOrNull()?.javaClass?.simpleName}");if(manual)message="无法完成更新检查，请检查网络后重试";return@launch}
             prefs.edit().putString("latest",tag).apply()
             if(!newer(tag)){if(manual)message="当前已是最新正式版"}
             else if(manual||(isForeground()&&shouldNotify(tag,System.currentTimeMillis()))){message=null;show(tag)}

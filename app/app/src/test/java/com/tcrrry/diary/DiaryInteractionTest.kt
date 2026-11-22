@@ -1034,6 +1034,45 @@ class DiaryInteractionTest {
         ui.onNodeWithTag("favorite-ranking").assertExists();ui.onNodeWithTag("ranking-list:0").assertExists();ui.onNodeWithText("常听排行").assertExists()
         ui.onNodeWithContentDescription("返回日记").performClick();ui.waitForIdle();ui.onNodeWithTag("music-group-detail").assertExists()
     }
+    @Test fun dailyFullRankingsShowChangesWithoutAddingChangesToHome(){
+        ui.onNodeWithTag("home-scroll").performScrollToNode(hasTestTag("all-link:今日最常听"))
+        ui.onAllNodesWithTag("rank-change",useUnmergedTree=true).assertCountEquals(0)
+        ui.onNodeWithTag("all-link:今日最常听").performClick()
+        ui.waitUntil(10000){
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            ui.onAllNodesWithTag("rank-change",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()
+        }
+        ui.onAllNodesWithTag("rank-change",useUnmergedTree=true).onFirst().assertExists()
+    }
+    @Test fun periodRankingAndDiscoveryReturnToTheirOriginalScrollPosition(){
+        val controller=ui.activity.controller
+        for(range in listOf(DiaryRange.WEEK,DiaryRange.MONTH,DiaryRange.YEAR)){
+            ui.runOnUiThread{controller.select(range=range)}
+            ui.waitForIdle()
+            val title=when(range){DiaryRange.WEEK->"本周循环";DiaryRange.MONTH->"本月偏爱";else->"年度循环"}
+            ui.onNodeWithTag("period-report").performScrollToNode(hasTestTag("all-link:$title"))
+            ui.onNodeWithTag("all-link:$title").performClick()
+            ui.waitForIdle()
+            ui.onNodeWithContentDescription("返回日记").performClick()
+            ui.waitForIdle()
+            ui.onNodeWithTag("all-link:$title").assertIsDisplayed()
+            ui.onNodeWithTag("period-report").performScrollToNode(hasTestTag("all-new"))
+            ui.onNodeWithTag("all-new").performClick()
+            ui.waitForIdle()
+            ui.onNodeWithTag("new-listening-page").assertExists()
+            ui.runOnUiThread{ui.activity.onBackPressedDispatcher.onBackPressed()}
+            ui.waitForIdle()
+            ui.onNodeWithTag("all-new").assertIsDisplayed()
+        }
+    }
+    @Test fun dayAlsoHasADiscoveryPage(){
+        ui.onNodeWithTag("home-scroll").performScrollToNode(hasTestTag("all-new"))
+        ui.onNodeWithTag("all-new").performClick()
+        ui.waitForIdle()
+        ui.onNodeWithTag("new-listening-page").assertExists()
+        ui.waitForIdle()
+        ui.onAllNodes(hasText("首次收听 ·",substring=true)).assertCountEquals(0)
+    }
     @Test fun weeklyFullRankingsShowChangesAndDetailsUseOneComparisonTemplate(){
         val c=ui.activity.controller;ui.runOnUiThread{c.select(range=DiaryRange.WEEK)};ui.waitForIdle()
         ui.onNodeWithTag("period-report").performScrollToNode(hasTestTag("all-link:本周循环"));ui.onNodeWithTag("all-link:本周循环").performClick();ui.waitForIdle()
@@ -1526,7 +1565,7 @@ class DiaryInteractionTest {
             DiaryDatabase.get(ui.activity).ingest(org.json.JSONObject().put("sourceId","ui-real").put("eventsSince",now-1000).put("events",org.json.JSONArray().put(event)))
             ui.activity.controller.preview(false);ui.activity.controller.select(day,DiaryRange.DAY)
         }
-        ui.waitUntil(10000){ui.activity.controller.report.manualSkips==1L};ui.waitForIdle();ui.onNodeWithTag("home-scroll").performScrollToNode(hasTestTag("stat-plays"));ui.onNodeWithTag("stat-plays").performClick();ui.waitForIdle();ui.onNodeWithText("次切歌").assertExists();shot("app-skip-real")
+        ui.waitUntil(10000){ui.activity.controller.report.manualSkips==1L};ui.waitForIdle();ui.onNodeWithTag("home-scroll").performScrollToNode(hasTestTag("stat-plays"));ui.onNodeWithTag("stat-plays").performClick();ui.waitForIdle();ui.onNodeWithText("次切歌·记录").assertExists();shot("app-skip-real")
     }
     @Test fun singleAndRepeatedCaptionKeepSongAndTimeAtTheSameSize(){
         fun verify(){
@@ -1543,7 +1582,7 @@ class DiaryInteractionTest {
             ui.runOnUiThread{ui.activity.controller.select(range=range)};ui.waitForIdle()
             val tag=if(range==DiaryRange.DAY)"home-scroll" else "period-report"
             ui.onNodeWithTag(tag).performScrollToNode(hasTestTag("stat-plays"))
-            ui.onNodeWithTag("stat-plays").performClick();ui.onNodeWithText("次切歌·估算").assertExists()
+            ui.onNodeWithTag("stat-plays").performClick();ui.onNodeWithText("切歌未采集").assertExists()
             ui.onNodeWithTag("stat-duration").performClick();ui.onNodeWithText("小时").assertExists()
             ui.onNodeWithTag("stat-tracks").performClick();ui.onNodeWithText("张专辑").assertExists()
             ui.onNodeWithTag("stat-artists").performClick();ui.onNodeWithText("位歌手·多首").assertExists()

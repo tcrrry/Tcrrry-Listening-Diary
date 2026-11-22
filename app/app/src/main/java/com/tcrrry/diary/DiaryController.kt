@@ -158,7 +158,7 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
     private val observer=object:ContentObserver(Handler(Looper.getMainLooper())){override fun onChange(selfChange:Boolean){if(foreground){collectorLink.received();refresh(true)}}}
     fun start(){if(foreground)return;foreground=true;lan.bind({lanStatus=it},{if(foreground)refresh(true)},{lanDevices=it});lanPaired=lan.paired;lanName=lan.ownName();lanManualAddress=lan.manualAddress();lanDevices=lan.peers();browserDevices=browserSync.devices();lan.start();browserSync.start();startListeningClock();if(amTypeface==null&&fontJob?.isActive!=true)fontJob=scope.launch{amTypeface=withContext(Dispatchers.IO){runCatching{val host=activity.createPackageContext(BridgeIdentity.HOST,0);val rounded=host.resources.getIdentifier("sf_pro_rounded_android_ui","font",BridgeIdentity.HOST);val id=if(rounded!=0)rounded else host.resources.getIdentifier("sf_pro_android_ui","font",BridgeIdentity.HOST);if(id!=0)host.resources.getFont(id)else null}.getOrNull()}};images.active(true);imageEpoch++;activity.contentResolver.registerContentObserver(BridgeIdentity.URI,true,observer);approved=BridgeIdentity.approved(activity);refresh(false);if(!demo)collectorLink.start(approved)}
     fun stop(){if(!foreground)return;browserSync.stop();lan.stop();lan.unbind();lanCode=null;summaryExitTicket++;summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();foreground=false;activity.contentResolver.unregisterContentObserver(observer);images.active(false)}
-    fun close(){summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();appleListJob?.cancel();appleJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();job?.cancel();fontJob?.cancel();images.close()}
+    fun close(){summaryExitJob?.cancel();listeningClockJob?.cancel();summaryPreloadJob?.cancel();metadataRefreshJob?.cancel();appleListJob?.cancel();appleJob?.cancel();collectorLink.stop();summaryJob?.cancel();summaryMetadataJob?.cancel();job?.cancel();dayPreviewJob?.cancel();fontJob?.cancel();images.close()}
     private var summaryExitJob:Job?=null
     private var summaryExitTicket=0L
     internal val preparedPeriods=mutableStateMapOf<DiaryRange,PreparedPeriod>()
@@ -366,19 +366,48 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
     fun preview(on:Boolean){if(demo!=on){preparedPeriods.clear();summaryPreloadJob?.cancel();summaryStamp=null;summaryFacts=SummaryFacts(DiaryReport());report=DiaryReport()};demo=on;if(on)collectorLink.stop()else if(foreground)collectorLink.start(approved);refresh(false)}
     private var refreshPending=false
     private var selectionSerial=0
+    private var dayPreviewJob:Job?=null
+    private var completedProjectionSerial=-1
+    private fun refreshDayPreviewWhileLoading(){
+        if(range!=DiaryRange.DAY || dayPolicy.mode==ListeningDayMode.AUTO || dayPreviewJob?.isActive==true || completedProjectionSerial==selectionSerial)return
+        val ticket=selectionSerial;val selectedDay=day;val policy=dayPolicy
+        dayPreviewJob=scope.launch {
+            delay(180)
+            try {
+                val quick=withContext(Dispatchers.IO){DiaryDatabase.get(activity).readDayPreview(selectedDay,policy)}
+                ensureActive()
+                if(quick!=null && ticket==selectionSerial && completedProjectionSerial!=ticket && !summary && range==DiaryRange.DAY && day==selectedDay && quick.second>=dataRevision){
+                    dataRevision=quick.second;report=quick.first;showingCached=true;loading=false
+                    android.util.Log.i("DiaryTiming","refresh quick-sync-ready range=DAY")
+                }
+            } catch(e:CancellationException){throw e} catch(e:Exception){android.util.Log.w("DiaryTiming","Day preview refresh failed: ${e.javaClass.simpleName}")}
+        }
+    }
     fun refresh(debounce:Boolean){
         if(summary){
             dataRevision=prefs.getLong("data_revision",dataRevision)
             if(summaryFacts.report.history.isEmpty())refreshSummary(!debounce) else scheduleSummaryRefresh()
             return
         }
-        if(debounce&&job?.isActive==true){refreshPending=true;return}
-        if(!debounce){job?.cancel();selectionSerial++;showingCached=false;val selected=bounds(day,range);if(report.from!=selected.from||report.to!=selected.to)report=DiaryReport(from=selected.from,to=selected.to);loading=report.history.isEmpty()}
+        // A collector acknowledgement can change status/time without changing any listening rows.
+        // Keep in-flight discovery work and prepared period data intact in that case.
+        if(debounce&&!demo&&!showingCached&&!loading&&error==null){
+            val prepared=activePreparedPeriods()[range]
+            val selected=bounds(day,range)
+            if(prepared!=null&&!prepared.provisional&&prepared.revision==prefs.getLong("data_revision",0L)&&prepared.metadataEpoch==previewMetadataEpoch&&report.from==selected.from&&report.to==selected.to){
+                report=report.copy(lastSync=prefs.getLong("last_sync",0),nowTitle=prefs.getString("now_title","").orEmpty(),nowTrackId=prefs.getString("now_track_id","").orEmpty(),recordState=prefs.getString("record_state","等待采集插件").orEmpty())
+                android.util.Log.i("DiaryTiming","refresh status-only range=$range")
+                return
+            }
+        }
+        if(debounce&&job?.isActive==true){refreshPending=true;refreshDayPreviewWhileLoading();return}
+        if(!debounce){job?.cancel();dayPreviewJob?.cancel();selectionSerial++;showingCached=false;val selected=bounds(day,range);if(report.from!=selected.from||report.to!=selected.to)report=DiaryReport(from=selected.from,to=selected.to);loading=report.history.isEmpty()}
         if(demo){
             report=periodDemoReport(day,range);loading=false;periodTransitionReport=null;error=null;refreshPending=false
             images.artistTracks(report.history.groupBy{it.artist}.mapValues{(_,songs)->songs.map{it.id}.distinct().take(3)});images.prefetchArtists(report.topArtists.map{it.name});return
         }
         val ticket=selectionSerial;val requestedDay=day;val requestedRange=range;val policy=dayPolicy
+        completedProjectionSerial=-1
         job=scope.launch{
             val timingStart=android.os.SystemClock.elapsedRealtime()
             fun timing(stage:String){android.util.Log.i("DiaryTiming", "refresh $stage range=${requestedRange.name} elapsed=${android.os.SystemClock.elapsedRealtime()-timingStart}ms")}
@@ -394,26 +423,31 @@ class DiaryController(val activity:Activity,private val scope:LifecycleCoroutine
                         retainedPeriodComputed=computed;report=cached;showingCached=true;loading=cached.history.isEmpty()
                     }
                 }
-                // Give the initial collector handshake a short opportunity to complete before
-                // starting a full-history projection under the shared database lock.
-                if(!debounce&&collectorLink.syncing){
-                    kotlinx.coroutines.withTimeoutOrNull(2500){snapshotFlow{collectorLink.syncing}.first{!it}}
-                    timing("collector-priority")
-                }
-                if(!debounce&&requestedRange==DiaryRange.DAY&&report.history.isEmpty()){
+                if(!debounce&&requestedRange==DiaryRange.DAY&&(report.history.isEmpty()||showingCached)){
                     val quick=withContext(Dispatchers.IO){DiaryDatabase.get(activity).readDayPreview(requestedDay,policy)}
                     timing(if(quick==null)"quick-empty" else "quick-ready")
                     ensureActive();if(ticket!=selectionSerial)return@launch
                     if(quick!=null){dataRevision=quick.second;report=quick.first;showingCached=true;loading=false}
                 }
-                val versioned=withContext(Dispatchers.IO){DiaryDatabase.projection(activity).readReportVersioned(bounds(requestedDay,requestedRange),policy)}
-                timing("full-ready")
+                val local=if(requestedRange==DiaryRange.DAY)withContext(Dispatchers.IO){DiaryDatabase.get(activity).readDayScreen(requestedDay,policy)}else null
+                // Only the lifetime projection waits for the initial collector handshake.
+                if(local==null&&!debounce&&collectorLink.syncing){
+                    kotlinx.coroutines.withTimeoutOrNull(2500){snapshotFlow{collectorLink.syncing}.first{!it}}
+                    timing("collector-priority")
+                    refreshDayPreviewWhileLoading()
+                }
+                val versioned=local?:withContext(Dispatchers.IO){DiaryDatabase.projection(activity).readReportVersioned(bounds(requestedDay,requestedRange),policy)}
+                timing(if(local!=null)"day-ready" else "full-ready")
                 val provisional=!isPreviewRevisionCurrent(versioned.second)
                 val result=versioned.first
                 val computed=if(requestedRange==DiaryRange.DAY)null else withContext(Dispatchers.Default){computePeriod(result,requestedDay,requestedRange)}
                 ensureActive();if(ticket!=selectionSerial)return@launch
+                if(requestedRange==DiaryRange.DAY&&versioned.second<dataRevision&&showingCached){
+                    refreshPending=true
+                    return@launch
+                }
                 retainedPeriodComputed=computed
-                dataRevision=versioned.second;report=result;error=null;loading=false;showingCached=provisional;periodTransitionReport=null
+                completedProjectionSerial=ticket;dataRevision=versioned.second;report=result;error=null;loading=false;showingCached=provisional;periodTransitionReport=null
                 if(result.segments.size<=80000)activePreparedPeriods()[requestedRange]=PreparedPeriod(result,computed,versioned.second,previewMetadataEpoch)
                 if(!demo)scope.launch(Dispatchers.IO){if(ticket==selectionSerial)DailyReportCache.write(activity,requestedDay,policy,result,versioned.second,requestedRange)}
                 val preparation=withContext(Dispatchers.Default){

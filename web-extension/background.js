@@ -52,6 +52,7 @@ async function syncPending(probe=false){
 chrome.alarms.create('diary-sync',{periodInMinutes:1});chrome.alarms.onAlarm.addListener(a=>{if(a.name==='diary-sync')syncPending().catch(()=>{})});
 
 chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
+ if(msg?.type==='browser-identity'&&!sender.tab){browserIdentity().then(reply,()=>reply(null));return true}
  if(msg?.type==='sync-now'&&!sender.tab){syncPending(msg.probe===true).then(()=>reply({ok:true}),()=>reply({ok:false}));return true}
 
  if(msg?.type==='sample'&&Number.isInteger(sender.tab?.id)&&sender.url?.startsWith('https://music.apple.com/')){sample(sender.tab.id,msg.payload).then(()=>reply({ok:true}),()=>reply({ok:false}));return true}

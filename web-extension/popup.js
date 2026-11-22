@@ -1,6 +1,5 @@
 import {privateHost,sendBatch,pairGroup} from './sync.js';
 import {diaryBackup} from './export.js';
-import {browserIdentity} from './identity.js';
 const $=s=>document.querySelector(s),records=new Map(),states=new Map(),items=new Map();
 let loading=true,queued=[],editing=false;
 const port=chrome.runtime.connect({name:'diary-live'});
@@ -35,5 +34,5 @@ const initial=await chrome.storage.local.get(keys);renderPair(initial);
 if(initial.browserSyncHost&&initial.browserSyncKey)chrome.runtime.sendMessage({type:'sync-now',probe:true}).catch(()=>{});
 chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&keys.some(k=>k in changes))chrome.storage.local.get(keys).then(renderPair)});
 change.onclick=()=>{editing=true;pairForm.hidden=false;change.hidden=true};
-$('#pair').onclick=async()=>{const host=hostInput.value.trim(),code=$('#key').value.trim();if(!privateHost(host)||!/^\d{6}$/.test(code)){status.textContent='请输入有效的局域网 IP 和六位配对码';return}try{const granted=await chrome.permissions.request({origins:['http://*/*']});if(!granted){status.textContent='需要允许访问日记设备的局域网地址';return}status.textContent='正在配对…';const paired=await pairGroup(host,code),identity=await browserIdentity(),ack=await sendBatch(host,paired.key,[],[],fetch,identity);editing=false;await chrome.storage.local.set({browserSyncHost:host,browserSyncHosts:[...new Set([host,...paired.addresses])].filter(privateHost).slice(0,24),browserSyncKey:paired.key,browserSyncDeviceName:ack.deviceName||host,browserSyncStatus:'配对成功，正在同步…'});$('#key').value='';await chrome.runtime.sendMessage({type:'sync-now'})}catch(e){status.textContent='连接失败：检查 IP、配对码并保持配对码页面打开'}};
+$('#pair').onclick=async()=>{const host=hostInput.value.trim(),code=$('#key').value.trim();if(!privateHost(host)||!/^\d{6}$/.test(code)){status.textContent='请输入有效的局域网 IP 和六位配对码';return}try{const granted=await chrome.permissions.request({origins:['http://*/*']});if(!granted){status.textContent='需要允许访问日记设备的局域网地址';return}status.textContent='正在配对…';const paired=await pairGroup(host,code),identity=await chrome.runtime.sendMessage({type:'browser-identity'});if(!identity)throw Error('无法登记浏览器设备');const ack=await sendBatch(host,paired.key,[],[],fetch,identity);editing=false;await chrome.storage.local.set({browserSyncHost:host,browserSyncHosts:[...new Set([host,...paired.addresses])].filter(privateHost).slice(0,24),browserSyncKey:paired.key,browserSyncDeviceName:ack.deviceName||host,browserSyncStatus:'配对成功，正在同步…'});$('#key').value='';await chrome.runtime.sendMessage({type:'sync-now'})}catch(e){status.textContent='连接失败：检查 IP、配对码并保持配对码页面打开'}};
 unpair.onclick=async()=>{editing=false;await chrome.storage.local.remove(keys);$('#key').value='';renderPair({});status.textContent='已解除配对，本机记录保留'};

@@ -4,11 +4,9 @@ val signing = Properties().apply { rootProject.file(".private/signing.properties
 android {
     namespace = "com.tcrrry.diary"
     compileSdk = 37
-    defaultConfig { applicationId = "com.tcrrry.listeningdiary.app"; minSdk = 31; targetSdk = 37; versionCode = 162; versionName = "1.3" }
+    defaultConfig { applicationId = "com.tcrrry.listeningdiary.app"; minSdk = 31; targetSdk = 37; versionCode = 174; versionName = "1.3.1" }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    // The published source never contains the release signing key. Debug builds use the standard debug key;
-    // release builds are unsigned unless the maintainer provides their private signing configuration.
     signingConfigs { if (rootProject.file(".private/diary-preview.keystore").exists()) create("preview") { storeFile=rootProject.file(".private/diary-preview.keystore"); storePassword=signing.getProperty("storePassword"); keyAlias="diary-preview"; keyPassword=signing.getProperty("keyPassword") } }
     buildTypes { getByName("release") { isMinifyEnabled=false; signingConfig=signingConfigs.findByName("preview") } }
     testOptions { unitTests.isIncludeAndroidResources=true }
@@ -27,6 +25,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest:1.12.0")
 }
 tasks.withType<Test>().configureEach {
+    providers.gradleProperty("statisticsBackupFixture").orNull?.let { systemProperty("diary.statistics.fixture",it); maxHeapSize="2048m" }
     providers.gradleProperty("appleImportFixture").orNull?.let { systemProperty("diary.apple.fixture",it) }
     jvmArgs("--add-opens=java.base/java.io=ALL-UNNAMED", "--add-opens=java.base/java.lang=ALL-UNNAMED")
     systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")

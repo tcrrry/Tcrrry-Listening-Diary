@@ -19,4 +19,9 @@ class DiaryUpdatesTest {
   assertTrue(DiaryUpdateRules.shouldNotify(true,"v1.3",null,"v1.3",200,200))
   assertTrue(DiaryUpdateRules.shouldNotify(true,"v1.4","v1.3","v1.3",0,100))
  }
+ @Test fun releaseRedirectOnlyAcceptsFormalTagsFromThisRepository(){
+  assertEquals("v1.3",DiaryUpdateRules.redirectTag("https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3"))
+  assertEquals("v1.4",DiaryUpdateRules.redirectTag("/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.4"))
+  for(url in listOf("https://evil.example/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3","//evil.example/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3","https://github.com/other/repo/releases/tag/v1.3","https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3-preview.1","https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3?x=1"))assertNull(DiaryUpdateRules.redirectTag(url))
+ }
 }

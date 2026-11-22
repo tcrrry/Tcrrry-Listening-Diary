@@ -10,7 +10,7 @@ import java.time.ZoneOffset
 
 /** Independent read-only query so the summary need not wait for the full ledger projection. */
 internal object PeriodDurationReader {
-    fun read(context:Context,bound:DayBounds,policy:ListeningDayPolicy):Long? {
+    fun read(context:Context,bound:DayBounds,policy:ListeningDayPolicy,until:Instant?=null):Long? {
         if(policy.mode==ListeningDayMode.AUTO)return null
         val first=LocalDate.parse(bound.from);val after=LocalDate.parse(bound.to).plusDays(1)
         // UTC +/- two days safely covers all civil time zones and fixed cutoff hours.
@@ -27,16 +27,18 @@ internal object PeriodDurationReader {
             WHERE s.end>? AND s.start<? AND NOT EXISTS
             (SELECT 1 FROM import_spans earlier WHERE earlier.row_key=s.row_key AND earlier.batch<s.batch)
         """.trimIndent()
-        val zones=HashMap<String,ZoneId>();var total=0L
+        val windows=HashMap<String,Pair<Long,Long>>();var total=0L
         SQLiteDatabase.openDatabase(path.path,null,SQLiteDatabase.OPEN_READONLY).use { db ->
             db.rawQuery(sql,arrayOf(earliest.toString(),latest.toString(),earliest.toString(),latest.toString())).use { c ->
                 while(c.moveToNext()){
                     val start=c.getLong(0);val end=c.getLong(1);val ms=c.getLong(2)
                     if(end<=start||ms<=0)continue
-                    val name=c.getString(3);val zone=zones.getOrPut(name){runCatching{ZoneId.of(name)}.getOrDefault(ZoneId.systemDefault())}
-                    val low=first.atTime(cutoff,0).atZone(zone).toInstant().toEpochMilli()
-                    val high=after.atTime(cutoff,0).atZone(zone).toInstant().toEpochMilli()
-                    val a=maxOf(start,low);val b=minOf(end,high)
+                    val (low,high)=windows.getOrPut(c.getString(3)){
+                        val zone=runCatching{ZoneId.of(c.getString(3))}.getOrDefault(ZoneId.systemDefault())
+                        first.atTime(cutoff,0).atZone(zone).toInstant().toEpochMilli() to
+                            after.atTime(cutoff,0).atZone(zone).toInstant().toEpochMilli()
+                    }
+                    val a=maxOf(start,low);val b=minOf(end,high,until?.toEpochMilli()?:Long.MAX_VALUE)
                     if(b>a){val length=end-start;total+=(ms*((b-start).toDouble()/length)).toLong()-(ms*((a-start).toDouble()/length)).toLong()}
                 }
             }
