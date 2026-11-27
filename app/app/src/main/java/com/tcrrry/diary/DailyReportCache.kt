@@ -21,7 +21,9 @@ internal object DailyReportCache {
     private fun file(c:Context)=AtomicFile(File(c.cacheDir,"recent-day-report-v1.bin"))
     private fun epoch(c:Context)=c.getSharedPreferences("diary",Context.MODE_PRIVATE).getLong("cache_epoch",0)
     private fun revision(c:Context)=c.getSharedPreferences("diary",Context.MODE_PRIVATE).getLong("data_revision",0)
-    @Synchronized fun read(c:Context,date:LocalDate,policy:ListeningDayPolicy,range:DiaryRange=DiaryRange.DAY,requireCurrent:Boolean=false):DiaryReport?=runCatching{
+    @Synchronized fun read(c:Context,date:LocalDate,policy:ListeningDayPolicy,range:DiaryRange=DiaryRange.DAY,requireCurrent:Boolean=false):DiaryReport?=
+        readVersioned(c,date,policy,range,requireCurrent)?.first
+    @Synchronized fun readVersioned(c:Context,date:LocalDate,policy:ListeningDayPolicy,range:DiaryRange=DiaryRange.DAY,requireCurrent:Boolean=false):Pair<DiaryReport,Long>?=runCatching{
         val target=file(c,date,policy,range)
         val source=if(target.baseFile.exists())target else if(range==DiaryRange.DAY)file(c)else return null
         val path=source.baseFile;if(!path.exists()||path.length()>LIMIT)return null
@@ -31,11 +33,18 @@ internal object DailyReportCache {
         val b=bounds(date,range)
         if(saved.report.from!=b.from||saved.report.to!=b.to)return null
         path.setLastModified(System.currentTimeMillis())
-        saved.report.copy(nowTitle="",nowTrackId="")
+        val pool=HashMap<String,String>()
+        val report=saved.report.copy(
+            history=saved.report.history.mapTo(ArrayList(saved.report.history.size)){it.interned(pool)},
+            segments=saved.report.segments.mapTo(ArrayList(saved.report.segments.size)){it.interned(pool)},
+            nowTitle="",
+            nowTrackId=""
+        )
+        report to saved.revision
     }.getOrNull()
     @Synchronized fun write(c:Context,date:LocalDate,policy:ListeningDayPolicy,report:DiaryReport,expectedRevision:Long,range:DiaryRange=DiaryRange.DAY){
         val selected=bounds(date,range)
-        if(report.from!=selected.from||report.to!=selected.to||report.segments.size>80000)return
+        if(report.from!=selected.from||report.to!=selected.to||report.segments.size>200000)return
         runCatching{
             val rev=expectedRevision;if(revision(c)!=rev)return;val savedEpoch=epoch(c);val safe=report.copy(history=ArrayList(report.history),topArtists=ArrayList(report.topArtists),segments=ArrayList(report.segments),heat=HashSet(report.heat),dayTotals=HashMap(report.dayTotals),artistFirst=HashMap(report.artistFirst),skipsByDay=HashMap(report.skipsByDay));val entry=Entry(2,selected.from,policy.mode.name,policy.hour,rev,savedEpoch,safe)
             val bytes=ByteArrayOutputStream().also{buffer->ObjectOutputStream(buffer).use{it.writeObject(entry)}}.toByteArray()

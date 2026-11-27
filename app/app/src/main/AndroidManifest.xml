@@ -4,7 +4,7 @@
     <permission android:name="com.tcrrry.listeningdiary.app.permission.REQUEST_SYNC" android:protectionLevel="signature"/>
     <uses-permission android:name="com.tcrrry.listeningdiary.app.permission.REQUEST_SYNC"/>
     <queries><package android:name="com.apple.android.music"/></queries>
-    <application android:label="听歌日记" android:theme="@style/DiaryTheme" android:icon="@mipmap/ic_diary_launcher" android:roundIcon="@mipmap/ic_diary_launcher" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
+    <application android:label="听歌日记" android:theme="@style/DiaryTheme" android:icon="@mipmap/ic_diary_launcher" android:roundIcon="@mipmap/ic_diary_launcher" android:largeHeap="true" android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
         <activity android:name="com.tcrrry.diary.MainActivity" android:exported="true">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
         </activity>

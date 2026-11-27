@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
 import kotlinx.coroutines.*
 
+@Immutable
 data class LibraryGroup(val key:String,val title:String,val subtitle:String,val songs:List<Play>,val image:String){val ms get()=songs.sumOf{it.ms};val plays get()=songs.sumOf{it.effective}}
 internal fun libraryGroups(r:DiaryReport,artists:Boolean):List<LibraryGroup> {
     return if(artists)r.history.filter{!it.imported||it.artist!="未知歌手"}.groupBy{it.artist}.map{(name,raw)->LibraryGroup("artist:$name",name,"",sortedPlays(raw,SortOrder.COUNT),"artist:$name")}.sortedWith(compareByDescending<LibraryGroup>{it.ms}.thenBy{it.title})
@@ -34,8 +35,8 @@ internal fun libraryAlbumGroups(albums:List<AlbumStat>):List<LibraryGroup> = alb
     var tab by rememberSaveable{mutableIntStateOf(if(initialAlbum)1 else 0)}
     var expanded by rememberSaveable{mutableStateOf(if(initialArtist.isBlank())listOf<String>()else listOf("artist:$initialArtist"))}
     val detail=LocalDetailActions.current
-    val r=reportOverride?:c.report;val groups=remember(r.history,artists){libraryGroups(r,artists)}
-    val songs=remember(r.history){sortedPlays(r.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT)}
+    val r=reportOverride?:c.report;val groups=remember(RefKey(r.history),artists){libraryGroups(r,artists)}
+    val songs=remember(RefKey(r.history)){sortedPlays(r.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT)}
     val currentSongRanks=remember(songs){songs.mapIndexed{i,p->p.id to i+1}.toMap()}
     val currentGroupRanks=remember(groups){groups.mapIndexed{i,g->g.key to i+1}.toMap()}
     val oldRanks by produceState<LibraryPreviousRanks?>(null,c.day,c.range,c.dayPolicy,c.demo,c.dataRevision,artists,artistFilter,c.summary){
@@ -51,8 +52,10 @@ internal fun libraryAlbumGroups(albums:List<AlbumStat>):List<LibraryGroup> = alb
             }
             val previous=if(c.demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(c.day,c.range,-1),c.range)}else withContext(Dispatchers.IO){
                 val day=periodShift(c.day,c.range,-1)
-                val local=if(c.range==DiaryRange.DAY)DiaryDatabase.get(c.activity).readDayScreen(day,c.dayPolicy)?.first else null
-                local?:DiaryDatabase.projection(c.activity).readReportVersioned(bounds(day,c.range),c.dayPolicy).first
+                val b=bounds(day,c.range)
+                val db=DiaryDatabase.get(c.activity)
+                val local=if(c.range==DiaryRange.DAY)db.readDayScreen(day,c.dayPolicy)?.first else db.readPeriodScreen(b,c.dayPolicy)?.first
+                local?:DiaryDatabase.projection(c.activity).readReportVersioned(b,c.dayPolicy).first
             }
             value=withContext(Dispatchers.Default){
                 val scoped=if(artistFilter==null)previous else previous.copy(history=previous.history.filter{it.artist==artistFilter},segments=previous.segments.filter{it.artist==artistFilter})

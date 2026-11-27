@@ -34,7 +34,7 @@ internal data class WeeklyDetailUi(val target:WeeklyTarget,val stats:WeeklyListe
         value=WeekComparison()
         if(c.summary)return@produceState
         try{
-            val previous=if(demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(day,range,-1),range)}else withContext(Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(periodShift(day,range,-1),range),policy).first}
+            val previous=if(demo)withContext(Dispatchers.Default){periodDemoReport(periodShift(day,range,-1),range)}else withContext(Dispatchers.IO){val targetDay=periodShift(day,range,-1);val b=bounds(targetDay,range);val db=DiaryDatabase.get(c.activity);(if(range==DiaryRange.DAY)db.readDayScreen(targetDay,policy) else db.readPeriodScreen(b,policy))?.first?:DiaryDatabase.projection(c.activity).readReportVersioned(b,policy).first}
             value=withContext(Dispatchers.Default){
                 val plays=previous.history.filter{target.matches(it)}
                 val total=previous.history.sumOf{it.ms}

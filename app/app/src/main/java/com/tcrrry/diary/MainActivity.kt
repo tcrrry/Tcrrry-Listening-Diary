@@ -90,4 +90,11 @@ class MainActivity : ComponentActivity() {
         controller.save(outState)
         super.onSaveInstanceState(outState)
     }
+
+    override fun onTrimMemory(level: Int) {
+        if (::controller.isInitialized && level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            controller.trimMemory(level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL)
+        }
+        super.onTrimMemory(level)
+    }
 }

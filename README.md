@@ -4,16 +4,22 @@
 
 把音乐留在日记里。听歌日记由 Android App、AM++ 采集插件和可选的 **Apple Music 网页采集扩展**组成，在本机展示听歌历史、统计、偏好与分享图片。
 
-## 下载 v1.3.1
+## 下载 v1.4.0
 
-[![下载听歌日记 APK](docs/download-app.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3.1/Listening-Diary-v1.3.1.apk)
-[![下载 AM++ 采集器 ZIP](docs/download-collector.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3.1/Listening-Diary-Collector-v1.0.2.zip)
+[![下载听歌日记 APK](docs/download-app.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.4.0/Listening-Diary-v1.4.0.apk)
+[![下载 AM++ 采集器 ZIP](docs/download-collector.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.4.0/Listening-Diary-Collector-v1.0.2.zip)
 
-[![下载网页采集扩展 ZIP](docs/download-web.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.3.1/Listening-Diary-Web-Extension-v0.6.2.zip)
+[![下载网页采集扩展 ZIP](docs/download-web.svg)](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/download/v1.4.0/Listening-Diary-Web-Extension-v0.6.2.zip)
 
-[查看发布页与更新说明](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.3.1) · [获取 AM++ 整合安装包](https://github.com/tcrrry/AMPP-Lyrics)
+[查看发布页与更新说明](https://github.com/tcrrry/Tcrrry-Listening-Diary/releases/tag/v1.4.0) · [获取 AM++ 整合安装包](https://github.com/tcrrry/AMPP-Lyrics)
 
-**手机听歌**：安装 APK，并在 AM++ 中导入采集器 ZIP；本次请一并覆盖更新采集器，以启用 7.0.3 的主动切歌记录。**网页听歌**：额外使用下方网页扩展，也可仅用扩展本机记录。App 要求 Android 12 或更高版本。
+**手机听歌**：安装 APK，并在 AM++ 中导入采集器 ZIP；本次仅更新 App，AM++ 采集器（v1.0.2）与网页扩展（v0.6.2）保持不变，已安装用户直接覆盖安装 App 即可。**网页听歌**：额外使用下方网页扩展，也可仅用扩展本机记录。App 要求 Android 12 或更高版本。
+
+## v1.4.0 更新
+
+- **大数据量性能与内存深度优化**：周、月、年统计改为按时间窗口直读数据库与单遍聚合，「全部」页面后台无缝预加载并支持快照秒开；消除播放心跳引发的高频后台重算风暴，上下滚动期间暂停重型后台任务并持续维持高刷新率；开启 `largeHeap`、预编译匹配正则、收紧图片缓存并响应系统内存裁剪，显著降低卡顿与内存溢出风险。
+- **日视图异常高频播放主动修正（支持原位撤销）**：在「日」视图进入歌曲详情时，仅对当日有效播放 ≥ 8 次或连续单曲循环 ≥ 5 次的异常高频歌曲展示修正入口；提供一键智能推荐次数、快捷档位与步进微调，确认修正后直接同步生效于日 / 周 / 月 / 年 / 全部统计、CSV / TXT 导出、JSON 完整备份与局域网同步，并自动拦截采集器重复补回；修正后原位置提供「撤销修正」按键可随时还原。
+- **配套组件兼容不变**：AM++ 采集器（v1.0.2）与 Chrome 网页扩展（v0.6.2）无需更新，直接保留既有记录、授权与配对状态。
 
 ## v1.3.1 更新
 
@@ -41,7 +47,7 @@
 
 ## 安装与更新
 
-1. 安装或覆盖安装 `Listening-Diary-v1.3.1.apk`，打开日记，在设置中连接 AM++ 采集器并授权。
+1. 安装或覆盖安装 `Listening-Diary-v1.4.0.apk`，打开日记，在设置中连接 AM++ 采集器并授权。
 2. 打开 AM++ 的插件管理器，导入 `Listening-Diary-Collector-v1.0.2.zip` 并启用；如宿主提示重启，请重新打开 AM++。
 3. 正常播放歌曲后打开日记查看。插件在 AM++ 运行时记录，App 不需要一直打开；首次同步或补传旧记录可能需要一点时间。
 

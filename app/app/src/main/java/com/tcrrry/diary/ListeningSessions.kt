@@ -10,4 +10,31 @@ internal object ListeningSessions {
         input.filter{it.end>it.start&&it.ms>0}.sortedBy{it.start}.forEach{row->if(rows.isNotEmpty()&&row.start-lastEnd>BREAK_MS)commit();rows.add(row);lastEnd=if(rows.size==1)row.end else maxOf(lastEnd,row.end)}
         commit();return result
     }
+    /** Lightweight session summaries without retaining per-session Play lists in memory/snapshots. */
+    fun summaries(input:List<Play>):List<ListeningSession>{
+        val filtered=ArrayList<Play>(input.size)
+        var sorted=true;var prevStart=Long.MIN_VALUE
+        for(row in input){
+            if(row.end>row.start&&row.ms>0){
+                if(row.start<prevStart)sorted=false
+                prevStart=row.start
+                filtered.add(row)
+            }
+        }
+        if(filtered.isEmpty())return emptyList()
+        if(!sorted)filtered.sortBy{it.start}
+        val result=ArrayList<ListeningSession>()
+        var firstStart=0L;var firstVisit="";var lastEnd=Long.MIN_VALUE;var totalMs=0L;var count=0
+        for(row in filtered){
+            if(count>0&&row.start-lastEnd>BREAK_MS){
+                result.add(ListeningSession("$firstStart:$firstVisit",firstStart,lastEnd,totalMs,emptyList()))
+                count=0;totalMs=0L
+            }
+            if(count==0){firstStart=row.start;firstVisit=row.visit;lastEnd=row.end}
+            else if(row.end>lastEnd)lastEnd=row.end
+            totalMs+=row.ms;count++
+        }
+        if(count>0)result.add(ListeningSession("$firstStart:$firstVisit",firstStart,lastEnd,totalMs,emptyList()))
+        return result
+    }
 }

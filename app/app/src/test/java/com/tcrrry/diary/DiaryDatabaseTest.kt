@@ -231,6 +231,53 @@ class DiaryDatabaseTest {
         }
         assertNull(db.readDayScreen(day,ListeningDayPolicy(ListeningDayMode.AUTO)))
     }
+    @Test fun localPeriodScreenMatchesFullReportAcrossWeekMonthYearImportsAndMetadata(){
+        db.ingest(payload());db.ingest(eventBatch())
+        val zone="UTC"
+        val startA=day.minusDays(2).atTime(10,0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        val startB=day.minusDays(40).atTime(14,0).toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+        val impA=AppleTrack("apple:p1","导入曲","导入歌手","导入专",240000)
+        val impUnknown=AppleTrack("apple:p2","补全曲","未知歌手","",240000)
+        val plan1=ApplePlan("1".repeat(64),"Batch 1",listOf(
+            AppleRow("k-1",impA,startA,120000,zone,"NATURAL_END_OF_TRACK",startA+120000,0,120000,"d"),
+            AppleRow("k-skip",impA,startA+300000,60000,zone,"TRACK_SKIPPED_FORWARDS",startA+360000,0,60000,"d"),
+            AppleRow("k-2",impUnknown,startB,90000,zone,"NATURAL_END_OF_TRACK",startB+90000,0,90000,"d")
+        ),0,0)
+        assertTrue(db.importApple(plan1))
+        val row=JSONObject().put("trackId",99887766L).put("artistId",112233L).put("trackName","补全曲").put("artistName","陈奕迅").put("collectionName","认了吧").put("trackTimeMillis",240000L).put("artworkUrl100","https://is1-ssl.mzstatic.com/test/100x100bb.jpg")
+        assertTrue(TrackMetadata.shared(db.images).put(impUnknown.id,AppleTrackImages.Hint(impUnknown.title,impUnknown.artist,impUnknown.album,impUnknown.duration),row))
+        val policy=ListeningDayPolicy(ListeningDayMode.FIXED,6)
+        for(range in listOf(DiaryRange.WEEK,DiaryRange.MONTH,DiaryRange.YEAR)){
+            val b=bounds(day,range)
+            val full=db.readReport(b,policy)
+            val local=db.readPeriodScreen(b,policy)!!.first
+            assertEquals("ms $range",full.ms,local.ms)
+            assertEquals("plays $range",full.plays,local.plays)
+            assertEquals("tracks $range",full.tracks,local.tracks)
+            assertEquals("artists $range",full.artists,local.artists)
+            assertEquals("history $range",full.history,local.history)
+            assertEquals("segments $range",full.segments,local.segments)
+            assertEquals("topArtists $range",full.topArtists,local.topArtists)
+            assertEquals("dayTotals $range",full.dayTotals,local.dayTotals)
+            assertEquals("skips $range",full.manualSkips,local.manualSkips)
+            assertEquals("skipsSince $range",full.manualSkipsSince,local.manualSkipsSince)
+            assertEquals("importedRows $range",full.importedRows,local.importedRows)
+            assertEquals("missingTitles $range",full.missingTitles,local.missingTitles)
+            assertEquals("skipsByDay $range",full.skipsByDay.filterKeys{it>=b.from&&it<=b.to},local.skipsByDay)
+        }
+        val plan2=ApplePlan("2".repeat(64),"Batch 2",listOf(
+            AppleRow("k-1",impA,startA,120000,zone,"NATURAL_END_OF_TRACK",startA+120000,0,120000,"d"),
+            AppleRow("k-extra",impA,startA+600000,80000,zone,"NATURAL_END_OF_TRACK",startA+680000,0,80000,"d")
+        ),0,0)
+        assertTrue(db.importApple(plan2))
+        val bYear=bounds(day,DiaryRange.YEAR)
+        val fullYear=db.readReport(bYear,policy)
+        val localYear=db.readPeriodScreen(bYear,policy)!!.first
+        assertEquals(fullYear.ms,localYear.ms)
+        assertEquals(fullYear.history,localYear.history)
+        assertEquals(fullYear.skipsByDay.filterKeys{it>=bYear.from&&it<=bYear.to},localYear.skipsByDay)
+        assertNull(db.readPeriodScreen(bounds(day,DiaryRange.WEEK),ListeningDayPolicy(ListeningDayMode.AUTO)))
+    }
     @Test fun durationIndexMatchesReportsAndInvalidatesOnImport(){
         val c=RuntimeEnvironment.getApplication();val policy=ListeningDayPolicy(ListeningDayMode.FIXED,6)
         db.ingest(payload());val b=bounds(day.minusDays(1),DiaryRange.DAY)

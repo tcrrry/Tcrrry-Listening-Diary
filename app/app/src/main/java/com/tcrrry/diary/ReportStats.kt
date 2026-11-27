@@ -1,7 +1,9 @@
 package com.tcrrry.diary
+import androidx.compose.runtime.Immutable
 import java.time.*
 import java.time.format.DateTimeFormatter
 
+@Immutable
 internal data class AlbumStat(val title:String,val artist:String,val songs:List<Play>,val ms:Long):java.io.Serializable{val cover get()=songs.maxBy{it.ms};val key get()=title+"\u0000"+artist}
 internal fun reportDays(r:DiaryReport):Map<LocalDate,Long>{
     if(r.dayTotals.isNotEmpty())return r.dayTotals.mapNotNull{(d,v)->runCatching{LocalDate.parse(d) to v}.getOrNull()}.toMap()

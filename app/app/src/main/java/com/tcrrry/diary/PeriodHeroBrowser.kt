@@ -120,7 +120,7 @@ internal fun randomizedMonthArtGeometry(seed: Int, key: String): MonthArtGeometr
     // Build geometry only for composed/current pages; do not lay out the whole year on entry.
     val yearLayouts = remember(layoutSeed) { mutableMapOf<Triple<String, Int, Int>, YearArtLayout>() }
     fun layoutFor(slice: PeriodHeroSlice): YearArtLayout {
-        val count = slice.albums.sumOf { it.songs.size }
+        val count = slice.totalSongCount
         val key = Triple(slice.key, count, slice.artists.size)
         return yearLayouts.getOrPut(key) { randomizedYearArtLayout(periodLayoutSeed(layoutSeed, slice.key), count, slice.artists.size) }
     }
@@ -165,7 +165,7 @@ internal fun randomizedMonthArtGeometry(seed: Int, key: String): MonthArtGeometr
     val coverCount = when (range) {
         DiaryRange.WEEK -> minOf(1, motionSlice.albums.size)
         DiaryRange.MONTH -> minOf(if (monthStyle == 2) 2 else 3, motionSlice.albums.size)
-        else -> minOf(yearLayout.songs.size, motionSlice.albums.sumOf { it.songs.size })
+        else -> minOf(yearLayout.songs.size, motionSlice.totalSongCount)
     }
     val artistCount = minOf(
         when (range) {
@@ -187,7 +187,7 @@ internal fun randomizedMonthArtGeometry(seed: Int, key: String): MonthArtGeometr
                     periodLayoutSeed(layoutSeed, tintSlice.key)
                 ).map { it.cover.id }
                 else -> periodLayoutItems(
-                    tintSlice.albums.flatMap { it.songs }.sortedWith(compareByDescending<Play> { it.ms }.thenBy { it.id }),
+                    tintSlice.topSongs,
                     layoutFor(tintSlice).songs.size,
                     periodLayoutSeed(layoutSeed, tintSlice.key)
                 ).map { it.id }
@@ -610,7 +610,7 @@ private fun periodHeroCardHeight(pageWidth: Dp, range: DiaryRange, typeScale: Fl
 ) {
     val songs = remember(slice, layoutSeed) {
         periodLayoutItems(
-            slice.albums.flatMap { it.songs }.sortedWith(compareByDescending<Play> { it.ms }.thenBy { it.id }),
+            slice.topSongs,
             layout.songs.size,
             periodLayoutSeed(layoutSeed, slice.key)
         )

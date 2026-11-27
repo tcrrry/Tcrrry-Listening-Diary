@@ -1,14 +1,18 @@
 package com.tcrrry.diary
 
+import androidx.compose.runtime.Immutable
 import java.time.*
 
 /** Calendar buckets are independent of visits: a visit may cross midnight or a week boundary. */
+@Immutable
 internal data class PeriodHeroSlice(
     val from: LocalDate,
     val to: LocalDate,
     val albums: List<AlbumStat>,
     val artists: List<ArtistStat>,
-    val ms: Long
+    val ms: Long,
+    val topSongs: List<Play> = albums.flatMap { it.songs }.sortedWith(compareByDescending<Play> { it.ms }.thenBy { it.id }).take(12),
+    val totalSongCount: Int = albums.sumOf { it.songs.size }
 ) {
     val key get() = "$from/$to"
     val lead get() = albums.firstOrNull()?.cover
@@ -73,7 +77,9 @@ internal fun periodHeroSlices(report: DiaryReport, day: LocalDate, range: DiaryR
         val artists = songs.filter { it.artist.isNotBlank() }.groupBy { it.artist }.map { (name, tracks) ->
             ArtistStat(name, tracks.sumOf { it.ms }, tracks.size)
         }.sortedWith(compareByDescending<ArtistStat> { it.ms }.thenBy { it.name })
-        PeriodHeroSlice(from, to, albums, artists, clipped.sumOf { it.ms })
+        val topSongs = albums.flatMap { it.songs }.sortedWith(compareByDescending<Play> { it.ms }.thenBy { it.id }).take(12)
+        val totalSongCount = albums.sumOf { it.songs.size }
+        PeriodHeroSlice(from, to, albums, artists, clipped.sumOf { it.ms }, topSongs, totalSongCount)
     }
 }
 

@@ -1,10 +1,13 @@
 package com.tcrrry.diary
 
+import androidx.compose.runtime.Immutable
 import java.time.*
 import org.json.JSONObject
 
+@Immutable
 internal data class ListeningDay(val date: LocalDate, val play: Play):java.io.Serializable
 
+@Immutable
 internal data class CatalogFact(
     val id: String,
     val albumId: String,
@@ -25,6 +28,7 @@ internal data class CatalogFact(
     }
 }
 
+@Immutable
 internal data class PreferenceBand(
     val from: YearMonth,
     val to: YearMonth,
@@ -32,6 +36,7 @@ internal data class PreferenceBand(
     val caption: String = artists.firstOrNull()?.name.orEmpty()
 ):java.io.Serializable
 
+@Immutable
 internal data class GenreStat(
     val name: String,
     val ms: Long,
@@ -39,6 +44,7 @@ internal data class GenreStat(
     val trackCount: Int
 )
 
+@Immutable
 internal data class MonthGenreSlice(
     val month: YearMonth,
     val totalMs: Long,
@@ -46,6 +52,7 @@ internal data class MonthGenreSlice(
     val leadPlay: Play?
 )
 
+@Immutable
 internal data class ArtistTimelineBucket(
     val label: String,
     val fullRangeTitle: String,
@@ -174,8 +181,17 @@ internal fun normalizeMusicGenre(rawGenre: String?, play: Play, artistFallbackGe
 }
 
 /** All derived figures share the recorded segments, including their own timezone and credited duration. */
+@Immutable
 internal class SummaryFacts(source: DiaryReport):java.io.Serializable {
-    val report=source.copy(history=ArrayList(source.history),segments=ArrayList(source.segments),topArtists=ArrayList(source.topArtists),heat=HashSet(source.heat),dayTotals=HashMap(source.dayTotals),artistFirst=HashMap(source.artistFirst),skipsByDay=HashMap(source.skipsByDay))
+    companion object {
+        private const val serialVersionUID = 2L
+    }
+    val report=run {
+        val pool=HashMap<String,String>()
+        val history=source.history.mapTo(ArrayList(source.history.size)){it.interned(pool)}
+        val segments=source.segments.mapTo(ArrayList(source.segments.size)){it.interned(pool)}
+        source.copy(history=history,segments=segments,topArtists=ArrayList(source.topArtists),heat=HashSet(source.heat),dayTotals=HashMap(source.dayTotals),artistFirst=HashMap(source.artistFirst),skipsByDay=HashMap(source.skipsByDay))
+    }
     val days: List<ListeningDay> = run {
         val result=ArrayList<ListeningDay>(report.segments.size)
         val zones=HashMap<String,ZoneId>()
@@ -289,7 +305,8 @@ internal class SummaryFacts(source: DiaryReport):java.io.Serializable {
 
     /** Precomputed hourly bins and session summary so the UI never recomputes them on the main thread. */
     val hourlyBins: List<Long> = HourlyListening.hours(report.segments)
-    val sessions: List<ListeningSession> = ListeningSessions.group(report.segments)
+    val sessions: List<ListeningSession> = ListeningSessions.summaries(report.segments)
+    val multiSongArtistCount: Int = multiSongArtists(report.history)
     val peakHourSummary: String = run {
         var bestStart = 20
         var bestSum = -1L

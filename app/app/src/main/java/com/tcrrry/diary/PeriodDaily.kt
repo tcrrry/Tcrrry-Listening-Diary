@@ -57,7 +57,6 @@ internal fun periodDayStreak(days: Set<LocalDate>): Int {
         val list=rememberLazyListState()
         val left by animateFloatAsState(if(list.canScrollBackward)1f else 0f,tween(180),label="period cover left fade")
         val right by animateFloatAsState(if(list.canScrollForward)1f else 0f,tween(180),label="period cover right fade")
-        val hardware=LocalView.current.isHardwareAccelerated&&!LocalInspectionMode.current
         Box(Modifier.weight(1f).height(66.dp).graphicsLayer{compositingStrategy=CompositingStrategy.Offscreen}.clipToBounds().drawWithContent{
             drawContent();val edge=12.dp.toPx().coerceAtMost(size.width/3)
             drawRect(Brush.horizontalGradient(listOf(Color.White.copy(alpha=1-left),Color.White),endX=edge),blendMode=BlendMode.DstIn)
@@ -66,11 +65,7 @@ internal fun periodDayStreak(days: Set<LocalDate>): Int {
             LazyRow(state=list,modifier=Modifier.fillMaxSize().testTag("period-daily-covers"),contentPadding=PaddingValues(horizontal=3.dp),horizontalArrangement=Arrangement.spacedBy(6.dp),verticalAlignment=Alignment.CenterVertically){
                 items(dates.filter { !it.isAfter(LocalDate.now()) && (totals[it] ?: 0L) > 0L }, key={it.toString()}) { date ->
                     val top=songs[date]?.firstOrNull()
-                    Column(Modifier.width(46.dp).testTag("period-day:$date").graphicsLayer{
-                        val info=list.layoutInfo.visibleItemsInfo.firstOrNull{it.key==date.toString()}
-                        val hidden=info?.let{maxOf(0,-it.offset,it.offset+it.size-list.layoutInfo.viewportEndOffset).toFloat()/it.size.coerceAtLeast(1)}?:0f
-                        renderEffect=if(hardware&&hidden>.04f)BlurEffect(2.5.dp.toPx()*hidden,2.5.dp.toPx()*hidden,TileMode.Decal)else null
-                    }.press { select(date); show(date) }, horizontalAlignment=Alignment.CenterHorizontally) {
+                    Column(Modifier.width(46.dp).testTag("period-day:$date").press { select(date); show(date) }, horizontalAlignment=Alignment.CenterHorizontally) {
                         if(top!=null) Artwork(c,top.id,Modifier.size(46.dp).historyCover(date.toString()).clip(RoundedCornerShape(10.dp)),edge=160)
                         else Box(Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(Muted.copy(alpha=.09f)),contentAlignment=Alignment.Center){Text("♪",fontSize=16.sp,color=Muted)}
                         Text(if(monthly)"${date.monthValue}月" else "${date.monthValue}/${date.dayOfMonth}",Modifier.padding(top=3.dp),fontSize=10.sp,color=if(date==selected) Accent else Muted,maxLines=1)

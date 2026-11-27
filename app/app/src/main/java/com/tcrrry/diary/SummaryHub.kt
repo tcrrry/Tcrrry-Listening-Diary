@@ -93,18 +93,28 @@ internal fun genreTint(index: Int, fallback: Color): Color =
     val destination = route.ifEmpty { "home:0" }
 
     // Compute mainstream genre stats off the main thread for large real-world libraries
+    val cachedGenresInitial = remember(facts, c.catalogFacts.size) {
+        c.getCachedSummaryGenres(facts, c.catalogFacts.size)
+            ?: if (facts.songs.size <= 200) mainstreamGenreStats(facts, c.catalogFacts) else emptyList()
+    }
     val cachedGenres by produceState(
-        initialValue = if (facts.songs.size <= 200) mainstreamGenreStats(facts, c.catalogFacts) else emptyList(),
+        initialValue = cachedGenresInitial,
         facts,
         c.catalogFacts
     ) {
+        val hit = c.getCachedSummaryGenres(facts, c.catalogFacts.size)
+        if (hit != null) {
+            value = hit
+            return@produceState
+        }
         value = if (facts.songs.size <= 200) {
             mainstreamGenreStats(facts, c.catalogFacts)
         } else {
+            c.awaitNavigationSettled()
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                 mainstreamGenreStats(facts, c.catalogFacts)
             }
-        }
+        }.also { c.putCachedSummaryGenres(facts, c.catalogFacts.size, it) }
     }
     val matchedGenres = remember(cachedGenres) {
         cachedGenres.filter { it.name != "未匹配" }
@@ -175,6 +185,9 @@ internal fun genreTint(index: Int, fallback: Color): Color =
     ) { page ->
         states.SaveableStateProvider(page) {
             val list = rememberLazyListState()
+            val verticalScrolling = list.isScrollInProgress
+            LaunchedEffect(verticalScrolling) { c.setVerticalScrolling(list, verticalScrolling) }
+            DisposableEffect(list) { onDispose { c.setVerticalScrolling(list, false) } }
             LazyColumn(
                 Modifier
                     .fillMaxSize()
@@ -231,10 +244,10 @@ internal fun genreTint(index: Int, fallback: Color): Color =
                             }
                         }
                         summaryItem("lifetime-stats") {
-                            ListeningStats(facts.report, Modifier.padding(horizontal = 17.dp)) { c.notice = it }
+                            ListeningStats(facts.report, Modifier.padding(horizontal = 17.dp), knownAlbumCount = facts.albums.size, knownMultiArtistCount = facts.multiSongArtistCount) { c.notice = it }
                         }
                         summaryItem("all-trail") {
-                            Box(Modifier.padding(horizontal = 16.dp)) { AllYearRings(facts, c.catalogFacts) { navigate("trend") } }
+                            Box(Modifier.padding(horizontal = 16.dp)) { AllYearRings(facts, c.catalogFacts, c) { navigate("trend") } }
                         }
                         summaryItem("all-favorites") {
                             Column(Modifier.padding(horizontal = 18.dp).testTag("all-favorites")) {
@@ -927,7 +940,7 @@ internal fun buildArtistGenreFallback(songs: List<Play>, catalog: Map<String, Ca
     return map
 }
 
-private fun mainstreamGenreStats(facts: SummaryFacts, catalog: Map<String, CatalogFact>): List<GenreStat> =
+internal fun mainstreamGenreStats(facts: SummaryFacts, catalog: Map<String, CatalogFact>): List<GenreStat> =
     mainstreamGenreStats(facts.songs, catalog)
 
 /** The daily and lifetime views deliberately share one categorization and artist fallback path. */

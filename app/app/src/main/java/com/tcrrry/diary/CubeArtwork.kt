@@ -47,7 +47,7 @@ private class CubeScratch {
 ) {
     var loaded by remember(id) { mutableStateOf(c.images.peek(id, 320)) }
     val bitmap = loaded ?: c.images.peek(id, 320)
-    DisposableEffect(id, c.imageNetwork, c.imageEpoch, c.report.lastSync) {
+    DisposableEffect(id, c.imageNetwork, c.imageEpoch, c.artEpoch) {
         val sub = c.images.load(id, 320) { img -> if (img != null) loaded = img }
         onDispose { sub.close() }
     }

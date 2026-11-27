@@ -28,14 +28,42 @@ import kotlinx.coroutines.*
 import java.time.*
 import kotlin.math.*
 
-internal data class PeriodComputed(val report:DiaryReport,val day:LocalDate,val range:DiaryRange,val days:Map<LocalDate,Long>,val albums:List<AlbumStat>,val ranking:List<Play>,val slices:List<PeriodHeroSlice>,val dailySongs:Map<LocalDate,List<Play>>,val monthlySongs:Map<LocalDate,List<Play>>,val monthlyTotals:Map<LocalDate,Long>,val favoriteAlbums:List<LibraryGroup>)
+@Immutable
+internal data class PeriodComputed(
+    val report:DiaryReport,
+    val day:LocalDate,
+    val range:DiaryRange,
+    val days:Map<LocalDate,Long>,
+    val albums:List<AlbumStat>,
+    val ranking:List<Play>,
+    val slices:List<PeriodHeroSlice>,
+    val dailySongs:Map<LocalDate,List<Play>>,
+    val monthlySongs:Map<LocalDate,List<Play>>,
+    val monthlyTotals:Map<LocalDate,Long>,
+    val favoriteAlbums:List<LibraryGroup>,
+    val songDayCounts:Map<String,Int> = emptyMap(),
+    val artistDayCounts:Map<String,Int> = emptyMap(),
+    val albumCount:Int = albums.size,
+    val multiSongArtistCount:Int = 0
+)
 internal fun computePeriod(report:DiaryReport,day:LocalDate,range:DiaryRange):PeriodComputed {
     val days=reportDays(report);val daily=dailyPeriodSongs(report)
     val months=if(range==DiaryRange.YEAR)List(12){day.withMonth(it+1).withDayOfMonth(1)}else emptyList()
     val monthlySongs=months.associateWith{month->sortedPlays(daily.filterKeys{it.year==month.year&&it.monthValue==month.monthValue}.values.flatten(),SortOrder.COUNT)}
     val monthlyTotals=months.associateWith{month->days.filterKeys{it.year==month.year&&it.monthValue==month.monthValue}.values.sum()}
     val albums=reportAlbums(report)
-    return PeriodComputed(report,day,range,days,albums,sortedPlays(report.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT),visiblePeriodHeroSlices(report,day,range),daily,monthlySongs,monthlyTotals,libraryAlbumGroups(albums))
+    val songDayCounts=HashMap<String,Int>()
+    val artistDayCounts=HashMap<String,Int>()
+    val daySongs=HashSet<String>()
+    val dayArtists=HashSet<String>()
+    for((_,list) in daily){
+        daySongs.clear();dayArtists.clear()
+        for(p in list){
+            if(daySongs.add(p.id))songDayCounts[p.id]=(songDayCounts[p.id]?:0)+1
+            if(p.artist.isNotBlank()&&p.artist!="未知歌手"&&dayArtists.add(p.artist))artistDayCounts[p.artist]=(artistDayCounts[p.artist]?:0)+1
+        }
+    }
+    return PeriodComputed(report,day,range,days,albums,sortedPlays(report.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT),visiblePeriodHeroSlices(report,day,range),daily,monthlySongs,monthlyTotals,libraryAlbumGroups(albums),songDayCounts,artistDayCounts,albums.size,multiSongArtists(report.history))
 }
 
 /** Decode the destination's actual visible month, rather than the first few months of the year. */
@@ -90,6 +118,9 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
     val inheritedHistory=LocalHistoryMotion.current
     val historyEnabled=inheritedHistory?.enabled==true&&c.range==range
     val historyMotion=remember(shared,inheritedHistory,range,historyEnabled){inheritedHistory?.let{HistoryMotion(shared,it.visibility,range.name,historyEnabled)}}
+    val verticalScrolling=list.isScrollInProgress
+    LaunchedEffect(verticalScrolling){c.setVerticalScrolling(list,verticalScrolling)}
+    DisposableEffect(list){onDispose{c.setVerticalScrolling(list,false)}}
     CompositionLocalProvider(LocalHistoryMotion provides historyMotion){
     LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("period-report").statusBarsPadding(),contentPadding=PaddingValues(bottom=30.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
         item("header"){Column(Modifier.padding(horizontal=20.dp).padding(top=12.dp)){
@@ -105,7 +136,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                 if(shown.isNotEmpty())PeriodHeroBrowser(c,shown,range,heroPager,onTint,open,allowAuto&&pagerSlices.isNotEmpty()&&heroVisible&&c.foreground,allArtists,shared,periodVisibility,summaryVisibility) else if(heroPending) PeriodHeroPlaceholder(range)
             }
             Spacer(Modifier.height(16.dp))
-            ListeningStats(r,with(shared){Modifier.sharedBounds(rememberSharedContentState("period-stats"),periodVisibility,enter=fadeIn(tween(120)),exit=fadeOut(tween(120)),boundsTransform={_,_->tween(320,easing=LinearEasing)})}.padding(horizontal=16.dp)){c.notice=it}
+            ListeningStats(r,with(shared){Modifier.sharedBounds(rememberSharedContentState("period-stats"),periodVisibility,enter=fadeIn(tween(120)),exit=fadeOut(tween(120)),boundsTransform={_,_->tween(320,easing=LinearEasing)})}.padding(horizontal=16.dp),knownAlbumCount=computed?.albumCount,knownMultiArtistCount=computed?.multiSongArtistCount){c.notice=it}
             if(c.loading)Text("正在读取所选周期…",Modifier.padding(start=20.dp,top=4.dp),fontSize=11.sp,color=Muted)
         }}
         when(range){
@@ -115,7 +146,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                 item("weekly-songs"){PeriodMotion(periodVisibility,2){Column(Modifier.padding(horizontal=18.dp)){
                     FavoriteHeading("本周循环",albumMode,{albumMode=it}){allSongs(albumMode)}
                     AnimatedContent(albumMode,transitionSpec={fadeIn(tween(250))+slideInHorizontally{it/10} togetherWith fadeOut(tween(160))},label="weekly favorites"){showAlbums->
-                        if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->val heard=dailySongs.count{(_,songs)->songs.any{it.id==p.id}};SongReportRow(c,p,i,if(heard>0)"${p.artist} · 听了${heard}天" else p.artist){open(p,"weekly:${p.id}")}}}
+                        if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->val heard=computed?.songDayCounts?.get(p.id)?:0;SongReportRow(c,p,i,if(heard>0)"${p.artist} · 听了${heard}天" else p.artist){open(p,"weekly:${p.id}")}}}
                     }
                 }}}
                 item("weekly-new"){PeriodMotion(periodVisibility,2){NewListeningSection(c,range,r,open,allNew)}}
@@ -127,7 +158,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                 }}}
 
                 item("monthly-favorites"){PeriodMotion(periodVisibility,2){Column(Modifier.padding(horizontal=18.dp)){FavoriteHeading("本月偏爱",albumMode,{albumMode=it}){allSongs(albumMode)}
-                    AnimatedContent(albumMode,transitionSpec={fadeIn(tween(250))+slideInHorizontally{it/10} togetherWith fadeOut(tween(160))},label="monthly favorites"){showAlbums->if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->SongReportRow(c,p,i,"${p.artist} · 听了${dailySongs.count{(_,songs)->songs.any{it.id==p.id}}}天"){open(p,"month:${p.id}")}}}}
+                    AnimatedContent(albumMode,transitionSpec={fadeIn(tween(250))+slideInHorizontally{it/10} togetherWith fadeOut(tween(160))},label="monthly favorites"){showAlbums->if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->SongReportRow(c,p,i,"${p.artist} · 听了${computed?.songDayCounts?.get(p.id)?:0}天"){open(p,"month:${p.id}")}}}}
                 }}}
                 item("monthly-new"){PeriodMotion(periodVisibility,2){NewListeningSection(c,range,r,open,allNew)}}
             }
@@ -142,7 +173,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
                 item("year-songs"){PeriodMotion(periodVisibility,2){Column(Modifier.padding(horizontal=18.dp)){
                     FavoriteHeading("年度循环",albumMode,{albumMode=it}){allSongs(albumMode)}
                     AnimatedContent(albumMode,transitionSpec={fadeIn(tween(250))+slideInHorizontally{it/10} togetherWith fadeOut(tween(160))},label="yearly favorites"){showAlbums->
-                        if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->SongReportRow(c,p,i,"${p.artist} · 听了${dailySongs.count{(_,songs)->songs.any{it.id==p.id}}}天"){open(p,"year-song:${p.id}")}}}
+                        if(showAlbums)FavoriteAlbumList(c,favoriteAlbums.take(5))else Column{ranking.take(5).forEachIndexed{i,p->SongReportRow(c,p,i,"${p.artist} · 听了${computed?.songDayCounts?.get(p.id)?:0}天"){open(p,"year-song:${p.id}")}}}
                     }
                 }}}
         }
@@ -151,7 +182,7 @@ internal fun heroRealPage(index:Int,count:Int):Int = if(count<=1)0 else index.co
             MemoryHeading("${label}常听歌手"){allArtists("")};Spacer(Modifier.height(15.dp))
             LazyRow(Modifier.testTag("period-artist-strip").graphicsLayer{compositingStrategy=CompositingStrategy.Offscreen}.drawWithContent{drawContent();val fade=14.dp.toPx();drawRect(Brush.horizontalGradient(listOf(Color.Transparent,Color.White),endX=fade),blendMode=BlendMode.DstIn);drawRect(Brush.horizontalGradient(listOf(Color.White,Color.Transparent),startX=size.width-fade,endX=size.width),blendMode=BlendMode.DstIn)},horizontalArrangement=Arrangement.spacedBy(4.dp)){
                 items(r.topArtists.take(10),key={it.name}){a->
-                    val artistDays=dailySongs.count{(_,songs)->songs.any{it.artist==a.name}}
+                    val artistDays=computed?.artistDayCounts?.get(a.name)?:0
                     Column(Modifier.width(92.dp).press{detailActions?.artist?.invoke(a.name,"strip-artist:${range.name}:${a.name}")},horizontalAlignment=Alignment.CenterHorizontally){Artwork(c,"artist:${a.name}",Modifier.size(68.dp).detailSource("strip-artist:${range.name}:${a.name}",shape=CircleShape).clip(CircleShape),edge=160);Text(a.name,Modifier.padding(top=8.dp),fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis);Text("听了${artistDays}天",Modifier.padding(top=3.dp),fontSize=12.sp,color=Muted)}
                 }
             }

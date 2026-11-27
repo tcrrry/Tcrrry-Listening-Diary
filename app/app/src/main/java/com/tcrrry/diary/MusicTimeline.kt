@@ -126,11 +126,17 @@ internal fun summaryTimelineSlots(seed: Int, visible: Int): List<Int> {
         motion.leaveQuick()
     }
 
+    val timelineView = LocalView.current
     LaunchedEffect(active, count, motion.quick) {
         if (active && count > 1) {
             var previous = 0L
+            var lastRateBoost = 0L
             while (true) {
                 withInfiniteAnimationFrameNanos { now ->
+                    if (!inspection && now - lastRateBoost >= 400_000_000L) {
+                        lastRateBoost = now
+                        boostViewFrameRate(timelineView)
+                    }
                     val elapsed = if (previous == 0L) 1f / 60f else ((now - previous) / 1_000_000_000f).coerceIn(0f, .05f)
                     previous = now
                     if (motion.quick && active) {
@@ -309,20 +315,6 @@ internal fun summaryTimelineSlots(seed: Int, visible: Int): List<Int> {
                     routeMeasure.length * step / 100f, routeMeasure.length * (step + 1) / 100f, it, true) } }
             }
 
-            if (hardware) Canvas(Modifier.fillMaxSize().graphicsLayer {
-                renderEffect = BlurEffect(2.6.dp.toPx(), 2.6.dp.toPx(), TileMode.Decal)
-            }) {
-                strokes.forEachIndexed { step, segment ->
-                    val f = (step + .5f) / 100f
-                    val tip = minOf(f, 1f - f)
-                    if (tip < .10f) {
-                        val fade = (tip / .055f).coerceIn(0f, 1f)
-                        val softness = 1f - (tip / .10f).coerceIn(0f, 1f)
-                        drawPath(segment, accent.copy(alpha = .38f * fade * softness),
-                            style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Butt))
-                    }
-                }
-            }
             Canvas(Modifier.fillMaxSize()) {
                 strokes.forEachIndexed { step, segment ->
                     val f = (step + .5f) / 100f
@@ -410,8 +402,8 @@ internal fun summaryTimelineSlots(seed: Int, visible: Int): List<Int> {
                                         scaleY = s
                                         cameraDistance = with(density) { 650.dp.toPx() }
                                         alpha = edge.coerceIn(0f, 1f)
-                                        renderEffect = if (hardware && edge < 0.94f) {
-                                            val blurPx = ((1f - edge) * 5.5.dp.toPx()).coerceAtLeast(0.5f)
+                                        renderEffect = if (hardware && edge < 0.72f) {
+                                            val blurPx = ((0.72f - edge) / 0.72f * 5.0.dp.toPx()).coerceAtLeast(0.5f)
                                             BlurEffect(blurPx, blurPx, TileMode.Decal)
                                         } else null
                                     }

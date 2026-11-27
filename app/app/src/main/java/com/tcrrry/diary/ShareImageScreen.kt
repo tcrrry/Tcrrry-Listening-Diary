@@ -47,7 +47,7 @@ import kotlinx.coroutines.*
         busy=true;message=null
         scope.launch{
             try{
-                val report=current?:withContext(Dispatchers.IO){if(demo)periodDemoReport(options.day,options.range)else DiaryDatabase.projection(c.activity).readReportVersioned(bounds(options.day,options.range),policy).first}
+                val report=current?:withContext(Dispatchers.IO){if(demo)periodDemoReport(options.day,options.range)else {val b=bounds(options.day,options.range);val db=DiaryDatabase.get(c.activity);(if(options.range==DiaryRange.DAY)db.readDayScreen(options.day,policy) else db.readPeriodScreen(b,policy))?.first?:DiaryDatabase.projection(c.activity).readReportVersioned(b,policy).first}}
                 if(report.history.isEmpty()){message="所选周期还没有听歌记录";return@launch}
                 val cached=if(ShareModule.STYLES in options.modules)withContext(Dispatchers.IO){CatalogMetadata.cached(File(c.activity.filesDir,"art"),(report.history+artistContext).map{it.id}.distinct()).objects().map{CatalogFact.parse(it)}.associateBy{it.id}}else emptyMap()
                 val document=withContext(Dispatchers.Default){shareDocument(report,options,cached+metadata,demo,use12Hour,artistContext+report.history)}

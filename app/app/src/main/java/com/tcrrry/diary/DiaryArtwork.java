@@ -24,7 +24,8 @@ final class DiaryArtwork implements AutoCloseable {
     private final ScheduledExecutorService identities=Executors.newScheduledThreadPool(2,factory("DiaryTrackIdentity"));
     private final ScheduledExecutorService artists=Executors.newScheduledThreadPool(3,factory("DiaryArtists"));
     private final ScheduledExecutorService downloads=Executors.newScheduledThreadPool(3,factory("DiaryImages"));
-    private final LruCache<String,Bitmap> cache=new LruCache<String,Bitmap>(64*1024*1024){protected int sizeOf(String k,Bitmap b){return b.getAllocationByteCount();}};
+    private final LruCache<String,Bitmap> cache=new LruCache<String,Bitmap>(32*1024*1024){protected int sizeOf(String k,Bitmap b){return b.getAllocationByteCount();}};
+    void trimMemory(boolean aggressive){cache.trimToSize(aggressive?0:12*1024*1024);}
     private final Map<String,Request> requests=new HashMap<>();
     private final LinkedHashSet<String> wanted=new LinkedHashSet<>();
     private final Set<String> resolving=new HashSet<>();

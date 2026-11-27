@@ -34,7 +34,11 @@ internal object SummarySnapshotCache{
         if(entry.version!=1||entry.mode!=policy.mode.name||entry.hour!=policy.hour||entry.epoch!=prefs(c).getLong("cache_epoch",0)||entry.revision>prefs(c).getLong("data_revision",0)){android.util.Log.i("DiarySummaryCache","Snapshot miss: policy or ledger generation changed");return null}
         android.util.Log.i("DiarySummaryCache","Snapshot restored: rows=${entry.facts.report.segments.size} ms=${android.os.SystemClock.elapsedRealtime()-started}")
         entry.facts to entry.revision
-    }.getOrElse{android.util.Log.w("DiarySummaryCache","Snapshot read failed",it);null}
+    }.getOrElse{
+        android.util.Log.w("DiarySummaryCache","Snapshot read failed",it)
+        if(it is InvalidClassException || it is StreamCorruptedException)runCatching{file(c).baseFile.delete()}
+        null
+    }
     @Synchronized fun write(c:Context,policy:ListeningDayPolicy,revision:Long,facts:SummaryFacts,expectedEpoch:Long=prefs(c).getLong("cache_epoch",0)):Boolean{
         if(facts.report.segments.size>250000){android.util.Log.w("DiarySummaryCache","Snapshot skipped: segment limit");return false}
         val started=android.os.SystemClock.elapsedRealtime()

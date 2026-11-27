@@ -32,9 +32,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.time.YearMonth
 
+@Immutable
 internal data class AllYearSlice(val year:Int,val duration:Long,val artists:Int,val songs:Int)
 internal fun allYearSlices(rows:List<ListeningDay>):List<AllYearSlice>{
     data class Acc(var duration:Long=0,val artists:MutableSet<String> = hashSetOf(),val songs:MutableSet<String> = hashSetOf())
@@ -45,6 +47,7 @@ internal fun allYearSlices(rows:List<ListeningDay>):List<AllYearSlice>{
     }
     return years.map{(year,v)->AllYearSlice(year,v.duration,v.artists.size,v.songs.size)}
 }
+@Immutable
 internal data class AllTrailEntry(val month:YearMonth,val song:Play?,val album:Play?,val artist:String?,val songMs:Long,val albumMs:Long,val artistMs:Long,val artistDays:Int,val artistTopTrack:String?)
 internal fun allTrailEntries(facts:SummaryFacts):List<AllTrailEntry> = facts.months.mapNotNull{(month,rows)->
     if(rows.isEmpty())return@mapNotNull null
@@ -56,6 +59,7 @@ internal fun allTrailEntries(facts:SummaryFacts):List<AllTrailEntry> = facts.mon
     AllTrailEntry(month,songs?.firstOrNull()?.play,albums?.firstOrNull()?.play,artists?.key,songs?.sumOf{it.play.ms}?:0,albums?.sumOf{it.play.ms}?:0,artistRows.sumOf{it.play.ms},artistRows.map{it.date}.distinct().size,artistTrack)
 }
 
+@Immutable
 internal data class AnnualGenrePoint(val year:Int,val total:Long,val genres:Map<String,Long>)
 internal fun annualGenrePoints(facts:SummaryFacts,catalog:Map<String,CatalogFact>):List<AnnualGenrePoint>{
     val fallback=buildArtistGenreFallback(facts.songs,catalog)
@@ -68,6 +72,7 @@ internal fun annualGenrePoints(facts:SummaryFacts,catalog:Map<String,CatalogFact
     return (years.firstKey()..years.lastKey()).map{year->val values=years[year].orEmpty();AnnualGenrePoint(year,values.values.sum(),values)}
 }
 
+@Immutable
 internal data class PreferencePoint(val month:YearMonth,val total:Long,val artists:Map<String,Long>,val genres:Map<String,Long>,val exploration:Map<String,Long>)
 internal fun preferencePoints(facts:SummaryFacts,catalog:Map<String,CatalogFact>):List<PreferencePoint>{
     val songMonths=HashMap<String,MutableSet<YearMonth>>()
@@ -131,8 +136,16 @@ internal fun preferenceVisibleTotal(map:Map<String,Long>,layers:List<String>):Lo
     }
 }
 
-@Composable internal fun AllYearRings(facts:SummaryFacts,catalog:Map<String,CatalogFact>,open:()->Unit){
-    val monthly by produceState<List<PreferencePoint>?>(null,facts,catalog){value=withContext(Dispatchers.Default){preferencePoints(facts,catalog)}}
+@Composable internal fun AllYearRings(facts:SummaryFacts,catalog:Map<String,CatalogFact>,c:DiaryController?=null,open:()->Unit){
+    val cached=remember(facts,catalog.size){c?.getCachedPreferencePoints(facts,catalog.size)?:if(facts.days.size<=2000)preferencePoints(facts,catalog).also{c?.putCachedPreferencePoints(facts,catalog.size,it)}else null}
+    val monthly by produceState<List<PreferencePoint>?>(cached,facts,catalog){
+        val hit=c?.getCachedPreferencePoints(facts,catalog.size)
+        if(hit!=null){value=hit;return@produceState}
+        if(c!=null)snapshotFlow{c.periodSwipePosition==null}.first{it}
+        val computed=withContext(Dispatchers.Default){preferencePoints(facts,catalog)}
+        c?.putCachedPreferencePoints(facts,catalog.size,computed)
+        value=computed
+    }
     var mode by remember{mutableIntStateOf(0)};var granularity by remember{mutableIntStateOf(2)};var selected by remember(facts){mutableIntStateOf(-1)}
     val dynamicAxis=true
     val points=remember(monthly,granularity){val data=monthly.orEmpty();when(granularity){1->preferenceAggregate(data,true);2->preferenceByYear(data);else->data}}

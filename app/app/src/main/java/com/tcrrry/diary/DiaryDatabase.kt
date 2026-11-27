@@ -47,6 +47,8 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         execSQL("CREATE INDEX IF NOT EXISTS import_spans_day ON import_spans(day)")
         execSQL("CREATE INDEX IF NOT EXISTS import_spans_first_track ON import_spans(batch,track,zone,start)")
         execSQL("CREATE INDEX IF NOT EXISTS import_spans_key ON import_spans(row_key,batch)")
+        execSQL("CREATE TABLE IF NOT EXISTS suppressed_spans(remote_id TEXT PRIMARY KEY,suppressed_at INTEGER NOT NULL)")
+        execSQL("CREATE TABLE IF NOT EXISTS correction_undos(day TEXT NOT NULL,track TEXT NOT NULL,kept_plays INTEGER NOT NULL,removed_effective INTEGER NOT NULL,removed_ms INTEGER NOT NULL,payload TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(day,track))")
         execSQL("CREATE VIEW IF NOT EXISTS diary_rows AS SELECT s.visit,s.track,s.day,s.zone,s.start,s.end,s.ms,t.title,t.artist,t.album,t.duration,0 imported,'' batch,'' row_key,'' reason,s.device,s.route_source,s.volume_pct FROM spans s JOIN tracks t ON t.id=s.track UNION ALL SELECT s.visit,s.track,s.day,s.zone,s.start,s.end,s.ms,t.title,t.artist,t.album,t.duration,1 imported,s.batch,s.row_key,s.reason,'' device,'' route_source,-1 volume_pct FROM import_spans s JOIN import_tracks t ON t.batch=s.batch AND t.id=s.track WHERE NOT EXISTS(SELECT 1 FROM import_spans earlier WHERE earlier.row_key=s.row_key AND earlier.batch<s.batch)")
         version=1
         }
@@ -60,7 +62,7 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         if(next!=revision)revision=next
         nativeCatalogVersion=preferences.getLong("catalog_revision",0L)
     }
-    private fun bumpRevision(invalidateCache:Boolean=false){revision++;val edit=preferences.edit().putLong("data_revision",revision);if(invalidateCache)edit.putLong("cache_epoch",preferences.getLong("cache_epoch",0L)+1);edit.commit()}
+    private fun bumpRevision(invalidateCache:Boolean=false){revision++;cachedNeededArt=null;val edit=preferences.edit().putLong("data_revision",revision);if(invalidateCache)edit.putLong("cache_epoch",preferences.getLong("cache_epoch",0L)+1);edit.commit()}
     @Synchronized internal fun setEffectiveThreshold(seconds:Int) {
         check(!projectionOnly)
         val value=seconds.coerceIn(0,60)
@@ -69,6 +71,8 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         bumpRevision(true)
     }
     private data class LedgerRow(val play:Play,val reason:String,val key:String):java.io.Serializable
+    private data class TrackRow(val title:String,val artist:String,val album:String,val duration:Long)
+    private fun hasMultipleImportBatches():Boolean = db.rawQuery("SELECT COUNT(*) FROM import_batches",null).use{it.moveToFirst()&&it.getInt(0)>1}
     private var importedCache:List<LedgerRow>?=null
     private data class ImportedProjection(val rows:List<LedgerRow>,val policy:ListeningDayPolicy,val metadataVersion:Long,val catalogVersion:Long,val parts:List<DatedPlay>)
     private var importedProjection:ImportedProjection?=null
@@ -160,9 +164,11 @@ class DiaryDatabase private constructor(private val context:Context,private val 
             val started=android.os.SystemClock.elapsedRealtime()
             val importStamp="$generation:${preferences.getLong("cache_epoch",0)}"
             val importKey="discovery-import-first-rows-v1"
+            val multiBatch=hasMultipleImportBatches()
+            val dedup=if(multiBatch)" WHERE NOT EXISTS(SELECT 1 FROM import_spans earlier WHERE earlier.row_key=s.row_key AND earlier.batch<s.batch)" else ""
             val imports=discoveryImported?.takeIf{it.first==importStamp}?.second
                 ?: (DerivedStatisticsCache.read(context,importKey,importStamp) as? DiscoveryImports)?.rows
-                ?: ArrayList(ledger("SELECT s.visit,s.track,s.day,s.zone,MIN(s.start) start,s.end,s.ms,t.title,t.artist,t.album,t.duration,1 imported,s.batch,s.row_key,s.reason,'' device,'' route_source,-1 volume_pct FROM import_spans s JOIN import_tracks t ON t.batch=s.batch AND t.id=s.track WHERE NOT EXISTS(SELECT 1 FROM import_spans earlier WHERE earlier.row_key=s.row_key AND earlier.batch<s.batch) GROUP BY s.batch,s.track,s.zone ORDER BY start")).also{
+                ?: ArrayList(ledger("SELECT s.visit,s.track,s.day,s.zone,MIN(s.start) start,s.end,s.ms,t.title,t.artist,t.album,t.duration,1 imported,s.batch,s.row_key,s.reason,'' device,'' route_source,-1 volume_pct FROM import_spans s JOIN import_tracks t ON t.batch=s.batch AND t.id=s.track$dedup GROUP BY s.batch,s.track,s.zone ORDER BY start")).also{
                     DerivedStatisticsCache.write(context,importKey,importStamp,DiscoveryImports(it))
                 }
             discoveryImported=importStamp to imports
@@ -300,6 +306,222 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         val previous=listeningDays(recent.map{it.play},policy).asSequence().filter{it.play.start<=timestamp}.maxByOrNull{it.play.end}
         return listeningToday(now,policy,previous)
     }
+    private fun loadNativeTrackMap(textPool:MutableMap<String,String>):HashMap<String,TrackRow> {
+        fun text(value:String)=textPool.getOrPut(value){value}
+        val map=HashMap<String,TrackRow>();var last=0L
+        while(true){
+            var count=0
+            db.rawQuery("SELECT rowid,id,title,artist,album,duration FROM tracks WHERE rowid>? ORDER BY rowid LIMIT 4000",arrayOf(last.toString())).use{c->
+                while(c.moveToNext()){
+                    count++;last=c.getLong(0)
+                    val id=text(c.getString(1))
+                    map[id]=TrackRow(text(c.getString(2).ifBlank{"未知歌曲"}),text(c.getString(3).ifBlank{"未知歌手"}),text(c.getString(4)),c.getLong(5))
+                }
+            }
+            if(count<4000)break
+        }
+        return map
+    }
+    private fun loadImportTrackMap(textPool:MutableMap<String,String>):HashMap<Pair<String,String>,TrackRow> {
+        fun text(value:String)=textPool.getOrPut(value){value}
+        val map=HashMap<Pair<String,String>,TrackRow>();var last=0L
+        while(true){
+            var count=0
+            db.rawQuery("SELECT rowid,batch,id,title,artist,album,duration FROM import_tracks WHERE rowid>? ORDER BY rowid LIMIT 4000",arrayOf(last.toString())).use{c->
+                while(c.moveToNext()){
+                    count++;last=c.getLong(0)
+                    val batch=text(c.getString(1));val id=text(c.getString(2))
+                    map[batch to id]=TrackRow(text(c.getString(3).ifBlank{"未知歌曲"}),text(c.getString(4).ifBlank{"未知歌手"}),text(c.getString(5)),c.getLong(6))
+                }
+            }
+            if(count<4000)break
+        }
+        return map
+    }
+    private fun loadNativeLedger():List<LedgerRow> {
+        val textPool=HashMap<String,String>();fun text(value:String)=textPool.getOrPut(value){value}
+        val tracks=loadNativeTrackMap(textPool)
+        val list=ArrayList<LedgerRow>();var last=0L
+        while(true){
+            var count=0
+            db.rawQuery("SELECT rowid,visit,track,zone,start,end,ms,device,route_source,volume_pct FROM spans WHERE rowid>? ORDER BY rowid LIMIT 4000",arrayOf(last.toString())).use{c->
+                while(c.moveToNext()){
+                    count++;last=c.getLong(0)
+                    val trackId=text(c.getString(2));val tr=tracks[trackId]?:continue
+                    list+=LedgerRow(Play(trackId,text(c.getString(1)),tr.title,tr.artist,tr.album,c.getLong(4),c.getLong(5),c.getLong(6),tr.duration,text(c.getString(3)),imported=false,device=text(c.getString(7)),routeSource=text(c.getString(8)),volumePct=c.getInt(9)),"","")
+                }
+            }
+            if(count<4000)break
+        }
+        return list
+    }
+    private fun loadImportedLedger():List<LedgerRow> {
+        val textPool=HashMap<String,String>();fun text(value:String)=textPool.getOrPut(value){value}
+        val tracks=loadImportTrackMap(textPool)
+        val multiBatch=hasMultipleImportBatches()
+        val dedup=if(multiBatch)" AND NOT EXISTS(SELECT 1 FROM import_spans earlier WHERE earlier.row_key=s.row_key AND earlier.batch<s.batch)" else ""
+        val list=ArrayList<LedgerRow>();var last=0L
+        while(true){
+            var count=0
+            db.rawQuery("SELECT s.rowid,s.batch,s.visit,s.track,s.zone,s.start,s.end,s.ms,s.reason,s.row_key FROM import_spans s WHERE s.rowid>?$dedup ORDER BY s.rowid LIMIT 4000",arrayOf(last.toString())).use{c->
+                while(c.moveToNext()){
+                    count++;last=c.getLong(0)
+                    val batch=text(c.getString(1));val trackId=text(c.getString(3));val tr=tracks[batch to trackId]?:continue
+                    list+=LedgerRow(Play(trackId,text(c.getString(2)),tr.title,tr.artist,tr.album,c.getLong(5),c.getLong(6),c.getLong(7),tr.duration,text(c.getString(4)),imported=true),text(c.getString(8)),c.getString(9))
+                }
+            }
+            if(count<4000)break
+        }
+        return list
+    }
+    @Synchronized internal fun readPeriodScreen(bound:DayBounds,policy:ListeningDayPolicy):Pair<DiaryReport,Long>? {
+        if(policy.mode==ListeningDayMode.AUTO)return null
+        val started=android.os.SystemClock.elapsedRealtime()
+        updateProjectionRevision()
+        val from=LocalDate.parse(bound.from);val to=LocalDate.parse(bound.to)
+        val winStart=from.minusDays(3);val winEnd=to.plusDays(3)
+        val startMs=from.minusDays(2).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val endMs=to.plusDays(3).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val textPool=HashMap<String,String>();fun text(value:String)=textPool.getOrPut(value){value}
+        val nativeTracks=loadNativeTrackMap(textPool)
+        val multiBatch=hasMultipleImportBatches()
+        val dedup=if(multiBatch)" AND NOT EXISTS(SELECT 1 FROM import_spans earlier WHERE earlier.row_key=s.row_key AND earlier.batch<s.batch)" else ""
+        val nativeRows=ArrayList<LedgerRow>()
+        val rawImports=ArrayList<RawImportSpan>()
+        val neededByBatch=HashMap<String,MutableSet<String>>()
+        var chunk=winStart
+        while(!chunk.isAfter(winEnd)){
+            val chunkEnd=minOf(chunk.plusDays(44),winEnd)
+            val a=chunk.toString();val b=chunkEnd.toString()
+            db.rawQuery("SELECT visit,track,zone,start,end,ms,device,route_source,volume_pct FROM spans WHERE day>=? AND day<=? AND start<? AND end>?",arrayOf(a,b,endMs.toString(),startMs.toString())).use{c->
+                while(c.moveToNext()){
+                    val trackId=text(c.getString(1));val tr=nativeTracks[trackId]?:continue
+                    nativeRows+=LedgerRow(Play(trackId,text(c.getString(0)),tr.title,tr.artist,tr.album,c.getLong(3),c.getLong(4),c.getLong(5),tr.duration,text(c.getString(2)),imported=false,device=text(c.getString(6)),routeSource=text(c.getString(7)),volumePct=c.getInt(8)),"","")
+                }
+            }
+            db.rawQuery("SELECT s.batch,s.visit,s.track,s.zone,s.start,s.end,s.ms,s.reason,s.row_key FROM import_spans s WHERE s.day>=? AND s.day<=? AND s.start<? AND s.end>?$dedup",arrayOf(a,b,endMs.toString(),startMs.toString())).use{c->
+                while(c.moveToNext()){
+                    val batch=text(c.getString(0));val trackId=text(c.getString(2))
+                    neededByBatch.getOrPut(batch){HashSet()}.add(trackId)
+                    rawImports+=RawImportSpan(batch,text(c.getString(1)),trackId,text(c.getString(3)),c.getLong(4),c.getLong(5),c.getLong(6),text(c.getString(7)),c.getString(8))
+                }
+            }
+            chunk=chunkEnd.plusDays(1)
+        }
+        val importTracks=HashMap<Pair<String,String>,TrackRow>()
+        for((batch,ids) in neededByBatch){
+            val idList=ids.toList()
+            for(slice in idList.chunked(400)){
+                val q=List(slice.size){"?"}.joinToString(",")
+                val args=Array(slice.size+1){idx->if(idx==0)batch else slice[idx-1]}
+                db.rawQuery("SELECT id,title,artist,album,duration FROM import_tracks WHERE batch=? AND id IN ($q)",args).use{c->
+                    while(c.moveToNext()){
+                        val id=text(c.getString(0))
+                        importTracks[batch to id]=TrackRow(text(c.getString(1).ifBlank{"未知歌曲"}),text(c.getString(2).ifBlank{"未知歌手"}),text(c.getString(3)),c.getLong(4))
+                    }
+                }
+            }
+        }
+        val records=ArrayList<LedgerRow>(rawImports.size+nativeRows.size)
+        for(s in rawImports){
+            val tr=importTracks[s.batch to s.track]?:continue
+            records+=LedgerRow(Play(s.track,s.visit,tr.title,tr.artist,tr.album,s.start,s.end,s.ms,tr.duration,s.zone,imported=true),s.reason,s.rowKey)
+        }
+        records+=nativeRows
+        val queried=android.os.SystemClock.elapsedRealtime()
+        val needsEnrich=records.any{!AppleTrackImages.knownArtist(it.play.artist)||it.play.album.isBlank()}
+        val enriched=if(!needsEnrich)records.map{it.play} else {
+            val names=HashMap<String,String>()
+            val needArtistSpellings=records.any{!AppleTrackImages.knownArtist(it.play.artist)}
+            val needNativeByTitle=records.any{it.play.imported&&(!AppleTrackImages.knownArtist(it.play.artist)||it.play.album.isBlank())}
+            if(needArtistSpellings){
+                db.rawQuery("SELECT DISTINCT artist FROM import_tracks WHERE artist!='' AND artist!='未知歌手'",null).use{c->
+                    while(c.moveToNext()){val a=text(c.getString(0));names[AppleTrackImages.normalized(a)]=a}
+                }
+                for((_,tr) in importTracks)if(AppleTrackImages.knownArtist(tr.artist))names.putIfAbsent(AppleTrackImages.normalized(tr.artist),tr.artist)
+            }
+            val nativeByTitle=if(needNativeByTitle)HashMap<String,MutableList<Play>>() else emptyMap()
+            if(needArtistSpellings||needNativeByTitle){
+                for((id,tr) in nativeTracks){
+                    if(AppleTrackImages.knownArtist(tr.artist)){
+                        if(needArtistSpellings)names[AppleTrackImages.normalized(tr.artist)]=tr.artist
+                        if(needNativeByTitle)(nativeByTitle as MutableMap<String,MutableList<Play>>).getOrPut(AppleTrackImages.normalized(tr.title)){ArrayList()}.add(Play(id,id,tr.title,tr.artist,tr.album,0,0,0,tr.duration,""))
+                    }
+                }
+            }
+            data class Identity(val id:String,val title:String,val artist:String,val album:String,val duration:Long)
+            val resolved=HashMap<Identity,Pair<String,String>>()
+            records.map { r ->
+                val p=r.play
+                val values=resolved.getOrPut(Identity(p.id,p.title,p.artist,p.album,p.duration)){
+                    val m=metadata.lookup(p)
+                    if(m==null){
+                        val candidates=if(p.imported)nativeByTitle[AppleTrackImages.normalized(p.title)].orEmpty().filter{AppleTrackImages.localMatch(AppleTrackImages.hint(p),AppleTrackImages.hint(it))}else emptyList()
+                        val source=candidates.takeIf{it.map{v->AppleTrackImages.normalized(v.artist)}.distinct().size==1}?.firstOrNull()
+                        (if(!AppleTrackImages.knownArtist(p.artist))source?.artist?:p.artist else p.artist) to p.album.ifBlank{source?.album.orEmpty()}
+                    }else {
+                        val found=m.optString("artistName");val artist=if(!AppleTrackImages.knownArtist(p.artist)&&AppleTrackImages.knownArtist(found))names[AppleTrackImages.normalized(found)]?:AppleTrackImages.displayName(found) else p.artist
+                        artist to p.album.ifBlank{AppleTrackImages.displayName(m.optString("collectionName"))}
+                    }
+                }
+                if(values.first==p.artist&&values.second==p.album)p else p.copy(artist=values.first,album=values.second)
+            }
+        }
+        val allParts=listeningDays(enriched,policy)
+        val ends=HashMap<String,DatedPlay>()
+        for(part in allParts){val old=ends[part.play.visit];if(old==null||old.play.end<part.play.end)ends[part.play.visit]=part}
+        val parts=allParts.filter{it.day>=from&&it.day<=to}.sortedBy{it.play.start}
+        val segments=parts.map{it.play}
+        class HistAcc(val first:Play,var start:Long,var end:Long,var ms:Long)
+        val grouped=ArrayList<HistAcc>(segments.size)
+        val byVisit=HashMap<String,HashMap<String,HistAcc>>(segments.size)
+        for(p in segments){
+            val byId=byVisit.getOrPut(p.visit){HashMap(4)}
+            val existing=byId[p.id]
+            if(existing==null){
+                val acc=HistAcc(p,p.start,p.end,p.ms)
+                byId[p.id]=acc;grouped.add(acc)
+            }else{
+                if(p.start<existing.start)existing.start=p.start
+                if(p.end>existing.end)existing.end=p.end
+                existing.ms+=p.ms
+            }
+        }
+        val history=grouped.map{acc->val p=acc.first;p.copy(start=acc.start,end=acc.end,ms=acc.ms,effective=DailyRows.effective(acc.ms,p.duration))}.sortedBy{it.start}
+        val imported=segments.filter{it.imported};val known=history.filter{!it.imported||it.title!="未知歌曲"}
+        val artists=history.filter{!it.imported||it.artist!="未知歌手"}.groupBy{it.artist}.map{(name,v)->ArtistStat(name,v.sumOf{it.ms},v.map{it.id}.distinct().size)}.sortedByDescending{it.ms}
+        val skips=HashMap<String,Long>()
+        val seenKeys=HashSet<String>()
+        for(r in records){
+            if(r.play.imported&&AppleActivityImport.isSkip(r.reason)&&seenKeys.add(r.key)){
+                val d=ends[r.play.visit]?.day?:continue
+                if(d>=from&&d<=to){val ds=d.toString();skips[ds]=(skips[ds]?:0L)+1L}
+            }
+        }
+        val cutoff=if(policy.mode==ListeningDayMode.FIXED)policy.hour.toLong()else 0L
+        db.rawQuery("SELECT at,zone FROM events WHERE day>=? AND day<=?",arrayOf(winStart.toString(),winEnd.toString())).use{c->
+            while(c.moveToNext()){
+                val at=c.getLong(0);val zone=java.time.ZoneId.of(c.getString(1))
+                val date=java.time.Instant.ofEpochMilli(at).atZone(zone).minusHours(cutoff).toLocalDate()
+                if(date>=from&&date<=to){val ds=date.toString();skips[ds]=(skips[ds]?:0L)+1L}
+            }
+        }
+        val totalSkips=skips.values.sum()
+        val since=rows("SELECT COALESCE(MIN(since),0) n FROM event_sources").getJSONObject(0).getLong("n")
+        val nativeCovered=since>0&&to.plusDays(1).atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()>since
+        val importedSince=imported.minOfOrNull{it.start}?:0
+        val report=DiaryReport(ms=segments.sumOf{it.ms},plays=history.count{it.effective>0},tracks=known.map{it.id}.distinct().size,artists=artists.size,
+            history=history,topArtists=artists.take(40),segments=segments,heat=emptySet(),
+            lastSync=preferences.getLong("last_sync",0),nowTitle=preferences.getString("now_title","").orEmpty(),nowTrackId=preferences.getString("now_track_id","").orEmpty(),recordState=preferences.getString("record_state","等待采集插件").orEmpty(),
+            from=bound.from,to=bound.to,dayTotals=parts.groupBy{it.day.toString()}.mapValues{(_,v)->v.sumOf{it.play.ms}},firstRecorded="",
+            artistFirst=emptyMap(),
+            manualSkips=if(nativeCovered||importedSince>0)totalSkips else null,manualSkipsSince=listOf(since.takeIf{nativeCovered}?:0,importedSince).filter{it>0}.minOrNull()?:0,
+            importedRows=imported.size,missingTitles=history.count{it.imported&&it.title=="未知歌曲"},skipsByDay=skips)
+        android.util.Log.i("DiaryTiming","period-local range=${bound.from}..${bound.to} rows=${segments.size} sql=${queried-started}ms total=${android.os.SystemClock.elapsedRealtime()-started}ms")
+        return report to revision
+    }
+    private data class RawImportSpan(val batch:String,val visit:String,val track:String,val zone:String,val start:Long,val end:Long,val ms:Long,val reason:String,val rowKey:String)
+
     private fun ledger(sql:String):List<LedgerRow> {
         val list=ArrayList<LedgerRow>();val textPool=HashMap<String,String>()
         fun text(value:String)=textPool.getOrPut(value){value}
@@ -308,14 +530,22 @@ class DiaryDatabase private constructor(private val context:Context,private val 
             while(c.moveToNext())list+=LedgerRow(Play(text(c.getString(id)),text(c.getString(visit)),text(c.getString(title).ifBlank{"未知歌曲"}),text(c.getString(artist).ifBlank{"未知歌手"}),text(c.getString(album)),c.getLong(start),c.getLong(end),c.getLong(ms),c.getLong(duration),text(c.getString(zone)),imported=c.getInt(imported)==1,device=text(c.getString(device)),routeSource=text(c.getString(route)),volumePct=c.getInt(volume)),text(c.getString(reason)),c.getString(key))
         };return list
     }
+    @Synchronized internal fun releaseProjectionMemory() {
+        importedCache=null
+        importedProjection=null
+        projectionKey=null
+        projected=emptyList()
+        projectedRows=emptyList()
+        projectedDays=emptyMap()
+    }
     /** Typed cursor path avoids building two large JSON copies for the lifetime report. */
     @Synchronized internal fun readReport(bound:DayBounds?,policy:ListeningDayPolicy=ListeningDayPolicy()):DiaryReport {
         val key=Triple(revision,policy,metadata.version())
         if(projectionKey!=key){
             val started=android.os.SystemClock.elapsedRealtime()
             android.util.Log.i("DiaryTiming","projection start mode=${policy.mode} caller="+Throwable().stackTrace.drop(1).firstOrNull{it.className.contains("diary") }?.methodName)
-            val imports=importedCache?:ledger("SELECT * FROM diary_rows WHERE imported=1").also{importedCache=it}
-            val nativeRows=ledger("SELECT * FROM diary_rows WHERE imported=0")
+            val imports=importedCache?:loadImportedLedger().also{importedCache=it}
+            val nativeRows=loadNativeLedger()
             val queried=android.os.SystemClock.elapsedRealtime()
             projectedRows=imports+nativeRows
             val enrich=ledgerEnricher(projectedRows)
@@ -380,10 +610,180 @@ class DiaryDatabase private constructor(private val context:Context,private val 
             manualSkips=if(nativeCovered||importedSince>0)totalSkips else null,manualSkipsSince=listOf(since.takeIf{nativeCovered}?:0,importedSince).filter{it>0}.minOrNull()?:0,
             importedRows=imported.size,missingTitles=history.count{it.imported&&it.title=="未知歌曲"},skipsByDay=skips)
     }
+    @Synchronized internal fun readCorrectionUndo(day:LocalDate,trackId:String):DailyCorrectionUndoInfo? {
+        if(trackId.isBlank())return null
+        return db.rawQuery("SELECT day,track,kept_plays,removed_effective,removed_ms,created_at FROM correction_undos WHERE day=? AND track=?",arrayOf(day.toString(),trackId)).use{c->
+            if(!c.moveToFirst())null else DailyCorrectionUndoInfo(c.getString(0),c.getString(1),c.getInt(2),c.getInt(3),c.getLong(4),c.getLong(5))
+        }
+    }
+    @Synchronized internal fun removeTrackVisits(
+        trackId:String,
+        visits:Set<String>,
+        day:LocalDate?=null,
+        keptPlays:Int=0,
+        removedEffective:Int=0,
+        removedMs:Long=0L
+    ):Int {
+        check(!projectionOnly)
+        if(trackId.isBlank()||visits.isEmpty())return 0
+        val now=System.currentTimeMillis()
+        var removedRows=0
+        val affectedBatches=HashSet<String>()
+        val deletedRemoteIds=JSONArray()
+        val deletedSpans=JSONArray()
+        val deletedImportSpans=JSONArray()
+        db.beginTransaction()
+        try {
+            for(chunk in visits.chunked(400)){
+                val placeholders=chunk.joinToString(","){ "?" }
+                val args=arrayOf(trackId,*chunk.toTypedArray())
+                db.rawQuery("SELECT remote_id,visit,track,day,zone,start,end,ms,volume_pct,device,route_source FROM spans WHERE track=? AND visit IN ($placeholders)",args).use{c->
+                    while(c.moveToNext()){
+                        val remoteId=c.getString(0)
+                        db.execSQL("INSERT OR REPLACE INTO suppressed_spans(remote_id,suppressed_at) VALUES(?,?)",arrayOf<Any>(remoteId,now))
+                        deletedRemoteIds.put(remoteId)
+                        deletedSpans.put(JSONObject().put("remote_id",remoteId).put("visit",c.getString(1)).put("track",c.getString(2)).put("day",c.getString(3)).put("zone",c.getString(4)).put("start",c.getLong(5)).put("end",c.getLong(6)).put("ms",c.getLong(7)).put("volume_pct",c.getInt(8)).put("device",c.getString(9)).put("route_source",c.getString(10)))
+                    }
+                }
+                removedRows+=db.delete("spans","track=? AND visit IN ($placeholders)",args)
+                db.rawQuery("SELECT batch,row_key,part,visit,track,day,zone,start,end,ms,reason,original_end,start_position,end_position,inferred FROM import_spans WHERE track=? AND visit IN ($placeholders)",args).use{c->
+                    while(c.moveToNext()){
+                        val batch=c.getString(0)
+                        affectedBatches.add(batch)
+                        deletedImportSpans.put(JSONObject().put("batch",batch).put("row_key",c.getString(1)).put("part",c.getInt(2)).put("visit",c.getString(3)).put("track",c.getString(4)).put("day",c.getString(5)).put("zone",c.getString(6)).put("start",c.getLong(7)).put("end",c.getLong(8)).put("ms",c.getLong(9)).put("reason",c.getString(10)).put("original_end",c.getLong(11)).put("start_position",c.getLong(12)).put("end_position",c.getLong(13)).put("inferred",c.getInt(14)))
+                    }
+                }
+                removedRows+=db.delete("import_spans","track=? AND visit IN ($placeholders)",args)
+            }
+            val batchSnapshots=JSONArray()
+            val trackSnapshots=JSONArray()
+            if(day!=null&&affectedBatches.isNotEmpty()){
+                for(batch in affectedBatches){
+                    db.rawQuery("SELECT id,label,rows,ms,from_day,to_day,imported_at FROM import_batches WHERE id=?",arrayOf(batch)).use{c->
+                        if(c.moveToFirst())batchSnapshots.put(JSONObject().put("id",c.getString(0)).put("label",c.getString(1)).put("rows",c.getInt(2)).put("ms",c.getLong(3)).put("from_day",c.getString(4)).put("to_day",c.getString(5)).put("imported_at",c.getLong(6)))
+                    }
+                    db.rawQuery("SELECT batch,id,title,artist,album,duration FROM import_tracks WHERE batch=? AND id=?",arrayOf(batch,trackId)).use{c->
+                        if(c.moveToFirst())trackSnapshots.put(JSONObject().put("batch",c.getString(0)).put("id",c.getString(1)).put("title",c.getString(2)).put("artist",c.getString(3)).put("album",c.getString(4)).put("duration",c.getLong(5)))
+                    }
+                }
+            }
+            for(batch in affectedBatches){
+                db.rawQuery("SELECT COUNT(DISTINCT row_key),COALESCE(SUM(ms),0),COALESCE(MIN(day),''),COALESCE(MAX(day),'') FROM import_spans WHERE batch=?",arrayOf(batch)).use{c->
+                    c.moveToFirst()
+                    val count=c.getInt(0);val sumMs=c.getLong(1);val minDay=c.getString(2);val maxDay=c.getString(3)
+                    if(count<=0||sumMs<=0L){
+                        db.delete("import_batches","id=?",arrayOf(batch))
+                        db.delete("import_tracks","batch=?",arrayOf(batch))
+                    }else{
+                        db.execSQL("UPDATE import_batches SET rows=?,ms=?,from_day=?,to_day=? WHERE id=?",arrayOf<Any>(count,sumMs,minDay,maxDay,batch))
+                    }
+                }
+            }
+            if(day!=null&&removedRows>0){
+                val dayText=day.toString()
+                var totalRemovedEffective=removedEffective
+                var totalRemovedMs=removedMs
+                val mergedPayload=JSONObject().put("remote_ids",deletedRemoteIds).put("spans",deletedSpans).put("import_spans",deletedImportSpans).put("import_batches",batchSnapshots).put("import_tracks",trackSnapshots)
+                db.rawQuery("SELECT removed_effective,removed_ms,payload FROM correction_undos WHERE day=? AND track=?",arrayOf(dayText,trackId)).use{c->
+                    if(c.moveToFirst()){
+                        totalRemovedEffective+=c.getInt(0)
+                        totalRemovedMs+=c.getLong(1)
+                        val old=JSONObject(c.getString(2))
+                        fun mergeArray(key:String,fresh:JSONArray):JSONArray{
+                            val combined=JSONArray()
+                            old.optJSONArray(key)?.let{arr->for(i in 0 until arr.length())combined.put(arr.get(i))}
+                            for(i in 0 until fresh.length())combined.put(fresh.get(i))
+                            return combined
+                        }
+                        mergedPayload.put("remote_ids",mergeArray("remote_ids",deletedRemoteIds))
+                        mergedPayload.put("spans",mergeArray("spans",deletedSpans))
+                        mergedPayload.put("import_spans",mergeArray("import_spans",deletedImportSpans))
+                        mergedPayload.put("import_tracks",mergeArray("import_tracks",trackSnapshots))
+                        val seenBatches=HashSet<String>()
+                        val combinedBatches=JSONArray()
+                        old.optJSONArray("import_batches")?.let{arr->for(i in 0 until arr.length()){val obj=arr.getJSONObject(i);if(seenBatches.add(obj.getString("id")))combinedBatches.put(obj)}}
+                        for(i in 0 until batchSnapshots.length()){val obj=batchSnapshots.getJSONObject(i);if(seenBatches.add(obj.getString("id")))combinedBatches.put(obj)}
+                        mergedPayload.put("import_batches",combinedBatches)
+                    }
+                }
+                db.execSQL("INSERT OR REPLACE INTO correction_undos(day,track,kept_plays,removed_effective,removed_ms,payload,created_at) VALUES(?,?,?,?,?,?,?)",arrayOf<Any>(dayText,trackId,keptPlays,totalRemovedEffective,totalRemovedMs,mergedPayload.toString(),now))
+            }
+            db.setTransactionSuccessful()
+        }finally{db.endTransaction()}
+        if(removedRows>0){
+            preferences.edit().putLong("first_span_revision",preferences.getLong("first_span_revision",0)+1).commit()
+            bumpRevision(true)
+            importedCache=null;importedProjection=null;projectionKey=null
+            projected=emptyList();projectedRows=emptyList();projectedDays=emptyMap()
+            discoveryMemory=null;discoveryImported=null
+        }
+        return removedRows
+    }
+    @Synchronized internal fun undoTrackCorrection(day:LocalDate,trackId:String):Int {
+        check(!projectionOnly)
+        if(trackId.isBlank())return 0
+        val dayText=day.toString()
+        var restored=0
+        db.beginTransaction()
+        try {
+            val rawPayload=db.rawQuery("SELECT payload FROM correction_undos WHERE day=? AND track=?",arrayOf(dayText,trackId)).use{c->if(c.moveToFirst())c.getString(0) else null}
+            if(rawPayload==null)return 0
+            val payload=JSONObject(rawPayload)
+            payload.optJSONArray("remote_ids")?.let{ids->for(i in 0 until ids.length())db.delete("suppressed_spans","remote_id=?",arrayOf(ids.getString(i)))}
+            payload.optJSONArray("spans")?.let{items->
+                for(i in 0 until items.length()){
+                    val s=items.getJSONObject(i)
+                    val row=ContentValues().apply{put("remote_id",s.getString("remote_id"));put("visit",s.getString("visit"));put("track",s.getString("track"));put("day",s.getString("day"));put("zone",s.getString("zone"));put("start",s.getLong("start"));put("end",s.getLong("end"));put("ms",s.getLong("ms"));put("volume_pct",s.getInt("volume_pct"));put("device",s.getString("device"));put("route_source",s.getString("route_source"))}
+                    if(db.insertWithOnConflict("spans",null,row,SQLiteDatabase.CONFLICT_IGNORE)!=-1L)restored++
+                }
+            }
+            val affectedBatches=HashSet<String>()
+            payload.optJSONArray("import_batches")?.let{batches->
+                for(i in 0 until batches.length()){
+                    val b=batches.getJSONObject(i)
+                    val id=b.getString("id");affectedBatches.add(id)
+                    val row=ContentValues().apply{put("id",id);put("label",b.getString("label"));put("rows",b.getInt("rows"));put("ms",b.getLong("ms"));put("from_day",b.getString("from_day"));put("to_day",b.getString("to_day"));put("imported_at",b.getLong("imported_at"))}
+                    db.insertWithOnConflict("import_batches",null,row,SQLiteDatabase.CONFLICT_IGNORE)
+                }
+            }
+            payload.optJSONArray("import_tracks")?.let{tracks->
+                for(i in 0 until tracks.length()){
+                    val t=tracks.getJSONObject(i)
+                    val row=ContentValues().apply{put("batch",t.getString("batch"));put("id",t.getString("id"));put("title",t.getString("title"));put("artist",t.getString("artist"));put("album",t.getString("album"));put("duration",t.getLong("duration"))}
+                    db.insertWithOnConflict("import_tracks",null,row,SQLiteDatabase.CONFLICT_IGNORE)
+                }
+            }
+            payload.optJSONArray("import_spans")?.let{items->
+                for(i in 0 until items.length()){
+                    val s=items.getJSONObject(i)
+                    val batch=s.getString("batch");affectedBatches.add(batch)
+                    val row=ContentValues().apply{put("batch",batch);put("row_key",s.getString("row_key"));put("part",s.getInt("part"));put("visit",s.getString("visit"));put("track",s.getString("track"));put("day",s.getString("day"));put("zone",s.getString("zone"));put("start",s.getLong("start"));put("end",s.getLong("end"));put("ms",s.getLong("ms"));put("reason",s.getString("reason"));put("original_end",s.getLong("original_end"));put("start_position",s.getLong("start_position"));put("end_position",s.getLong("end_position"));put("inferred",s.getInt("inferred"))}
+                    if(db.insertWithOnConflict("import_spans",null,row,SQLiteDatabase.CONFLICT_IGNORE)!=-1L)restored++
+                }
+            }
+            for(batch in affectedBatches){
+                db.rawQuery("SELECT COUNT(DISTINCT row_key),COALESCE(SUM(ms),0),COALESCE(MIN(day),''),COALESCE(MAX(day),'') FROM import_spans WHERE batch=?",arrayOf(batch)).use{c->
+                    if(c.moveToFirst()&&c.getInt(0)>0){
+                        db.execSQL("UPDATE import_batches SET rows=?,ms=?,from_day=?,to_day=? WHERE id=?",arrayOf<Any>(c.getInt(0),c.getLong(1),c.getString(2),c.getString(3),batch))
+                    }
+                }
+            }
+            db.delete("correction_undos","day=? AND track=?",arrayOf(dayText,trackId))
+            db.setTransactionSuccessful()
+        }finally{db.endTransaction()}
+        if(restored>0){
+            preferences.edit().putLong("first_span_revision",preferences.getLong("first_span_revision",0)+1).commit()
+            bumpRevision(true)
+            importedCache=null;importedProjection=null;projectionKey=null
+            projected=emptyList();projectedRows=emptyList();projectedDays=emptyMap()
+            discoveryMemory=null;discoveryImported=null
+        }
+        return restored
+    }
     @Synchronized fun writeBackup(writer:java.io.Writer){
         val out=android.util.JsonWriter(writer)
         out.beginObject();out.name("schemaVersion").value(1);out.name("format").value("listening-diary-app");out.name("sourceId").value("app");out.name("exportedAt").value(System.currentTimeMillis())
-        for(table in listOf("tracks","spans","events","event_sources","import_batches","import_tracks","import_spans","manual_imports")){
+        for(table in listOf("tracks","spans","events","event_sources","import_batches","import_tracks","import_spans","manual_imports","suppressed_spans")){
             out.name(table).beginArray()
             db.rawQuery("SELECT * FROM $table",null).use{c->while(c.moveToNext()){out.beginObject();for(i in 0 until c.columnCount){out.name(c.getColumnName(i));when(c.getType(i)){android.database.Cursor.FIELD_TYPE_INTEGER->out.value(c.getLong(i));android.database.Cursor.FIELD_TYPE_NULL->out.nullValue();else->out.value(c.getString(i))}};out.endObject()}}
             out.endArray()
@@ -429,6 +829,7 @@ class DiaryDatabase private constructor(private val context:Context,private val 
                 if(!same){catalogChanged=true;val row=ContentValues().apply{put("id",id);put("title",t.optString("title"));put("artist",t.optString("artist"));put("album",t.optString("album"));put("duration",t.optLong("duration"))};db.insertWithOnConflict("tracks",null,row,SQLiteDatabase.CONFLICT_REPLACE)}
             }
             for(i in 0 until spans.length()){val s=spans.getJSONObject(i);val remote=if(explicit)s.getString("remote_id") else source+":"+s.optLong("sync_id",s.getLong("id"));val visit=if(explicit)s.getString("visit")else source+":"+s.getString("visit");
+                if(!explicit&&db.rawQuery("SELECT 1 FROM suppressed_spans WHERE remote_id=?",arrayOf(remote)).use{it.moveToFirst()})continue
                 val row=ContentValues().apply{put("remote_id",remote);put("visit",visit);put("device",s.optString("device"));put("route_source",s.optString("route_source"));put("volume_pct",s.optInt("volume_pct",-1));for(k in listOf("track","day","zone"))put(k,s.optString(k));for(k in listOf("start","end","ms"))put(k,s.getLong(k))}
                 var exists=false
                 var oldMs=0L
@@ -469,7 +870,9 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         if(catalogChanged){nativeCatalogVersion++;preferences.edit().putLong("catalog_revision",nativeCatalogVersion).commit()}
         if(changed){bumpRevision(if(lanIncremental)hasImportedRows else importing||hasImportedRows);if(hasImportedRows)importedCache=null}
         if(!importing)preferences.edit().putString("approved_source",source).putLong("last_sync",System.currentTimeMillis()).putLong("sync_serial",preferences.getLong("sync_serial",0)+1).putString("now_title",payload.optString("nowTitle")).putString("now_track_id",payload.optString("nowTrackId").takeIf{it.length<=2048}?:"").putString("record_state",payload.optString("status")).apply()
-        payload.optJSONArray("art")?.let {art->for(i in 0 until minOf(8,art.length()))runCatching{val item=art.getJSONObject(i);val bytes=android.util.Base64.decode(item.getString("jpeg"),android.util.Base64.DEFAULT);require(bytes.size<=200000);val options=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true};android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,options);require(options.outWidth in 1..2048&&options.outHeight in 1..2048);java.io.File(images,ArtworkKeys.hash(item.getString("id"))+".jpg").let{file->if(!file.exists()){val temp=java.io.File.createTempFile("native-",".tmp",images);try{temp.writeBytes(bytes);java.nio.file.Files.move(temp.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING)}finally{temp.delete()}}}}}
+        var artSaved=0
+        payload.optJSONArray("art")?.let {art->for(i in 0 until minOf(8,art.length()))runCatching{val item=art.getJSONObject(i);val bytes=android.util.Base64.decode(item.getString("jpeg"),android.util.Base64.DEFAULT);require(bytes.size<=200000);val options=android.graphics.BitmapFactory.Options().apply{inJustDecodeBounds=true};android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,options);require(options.outWidth in 1..2048&&options.outHeight in 1..2048);java.io.File(images,ArtworkKeys.hash(item.getString("id"))+".jpg").let{file->if(!file.exists()){val temp=java.io.File.createTempFile("native-",".tmp",images);try{temp.writeBytes(bytes);java.nio.file.Files.move(temp.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);artSaved++}finally{temp.delete()}}}}}
+        if(artSaved>0){cachedNeededArt=null;preferences.edit().putInt("art_epoch",preferences.getInt("art_epoch",0)+1).apply()}
         return spans.length()+events.length()
     }
     private fun rows(sql:String,vararg args:String):JSONArray {val a=JSONArray();db.rawQuery(sql,args).use{c->while(c.moveToNext()){val row=JSONObject();for(i in 0 until c.columnCount)row.put(c.getColumnName(i),if(c.getType(i)==android.database.Cursor.FIELD_TYPE_INTEGER)c.getLong(i)else c.getString(i));a.put(row)}};return a}
@@ -512,7 +915,9 @@ class DiaryDatabase private constructor(private val context:Context,private val 
         for(i in 0 until manual.length()){val r=manual.getJSONObject(i);require(r.keys().asSequence().toSet()==setOf("id","label","kind","rows","ms","from_day","to_day","imported_at"));require(r.getString("id").matches(Regex("[0-9a-f]{64}")));require(r.getString("kind") in listOf("网页记录","日记备份","插件备份","JSON 记录"));require(r.getString("label").length<=180&&r.getLong("ms")>=0&&r.getInt("rows")>=0);for(k in listOf("from_day","to_day")){val day=r.getString(k);if(day.isNotEmpty())LocalDate.parse(day)}}
         val ids=appleBatches().map{it.id}.toSet()+result.getValue("import_batches").objects().map{it.getString("id")}
         for(table in listOf("import_tracks","import_spans"))for(row in result.getValue(table).objects())require(row.getString("batch") in ids)
-        return result+mapOf("manual_imports" to manual)
+        val suppressed=payload.optJSONArray("suppressed_spans")?:JSONArray();require(suppressed.length()<=200000)
+        for(i in 0 until suppressed.length()){val r=suppressed.getJSONObject(i);require(r.keys().asSequence().toSet()==setOf("remote_id","suppressed_at"));require(r.getString("remote_id").length in 1..160&&r.getLong("suppressed_at")>=0)}
+        return result+mapOf("manual_imports" to manual,"suppressed_spans" to suppressed)
     }
     @Synchronized internal fun appleBatches():List<AppleBatch> = rows("SELECT * FROM import_batches ORDER BY imported_at DESC").objects().map{AppleBatch(it.getString("id"),it.getString("label"),it.getInt("rows"),it.getLong("ms"),it.getString("from_day"),it.getString("to_day"),it.getLong("imported_at"))}
     @Synchronized internal fun manualBatches():List<AppleBatch> = rows("SELECT * FROM manual_imports ORDER BY imported_at DESC").objects().map{AppleBatch("manual:"+it.getString("id"),it.getString("kind")+" · "+it.getString("label"),it.getInt("rows"),it.getLong("ms"),it.getString("from_day"),it.getString("to_day"),it.getLong("imported_at"))}
@@ -544,8 +949,8 @@ class DiaryDatabase private constructor(private val context:Context,private val 
             db.setTransactionSuccessful()
         }finally{db.endTransaction()};bumpRevision(true);importedCache=null;return true
     }
-    @Synchronized internal fun removeApple(batch:String){db.beginTransaction();try{db.delete("import_spans","batch=?",arrayOf(batch));db.delete("import_tracks","batch=?",arrayOf(batch));db.delete("import_batches","id=?",arrayOf(batch));db.setTransactionSuccessful()}finally{db.endTransaction()};bumpRevision(true);importedCache=null}
-    @Synchronized fun backup()=JSONObject().put("schemaVersion",1).put("format","listening-diary-app").put("sourceId","app").put("exportedAt",System.currentTimeMillis()).put("tracks",rows("SELECT * FROM tracks")).put("spans",rows("SELECT * FROM spans ORDER BY start")).put("events",rows("SELECT * FROM events ORDER BY at")).put("event_sources",rows("SELECT * FROM event_sources")).put("import_batches",rows("SELECT * FROM import_batches")).put("import_tracks",rows("SELECT * FROM import_tracks")).put("import_spans",rows("SELECT * FROM import_spans")).put("manual_imports",rows("SELECT * FROM manual_imports"))
+    @Synchronized internal fun removeApple(batch:String){db.beginTransaction();try{db.delete("import_spans","batch=?",arrayOf(batch));db.delete("import_tracks","batch=?",arrayOf(batch));db.delete("import_batches","id=?",arrayOf(batch));db.delete("correction_undos","payload LIKE ?",arrayOf("%\"batch\":\"$batch\"%"));db.setTransactionSuccessful()}finally{db.endTransaction()};bumpRevision(true);importedCache=null}
+    @Synchronized fun backup()=JSONObject().put("schemaVersion",1).put("format","listening-diary-app").put("sourceId","app").put("exportedAt",System.currentTimeMillis()).put("tracks",rows("SELECT * FROM tracks")).put("spans",rows("SELECT * FROM spans ORDER BY start")).put("events",rows("SELECT * FROM events ORDER BY at")).put("event_sources",rows("SELECT * FROM event_sources")).put("import_batches",rows("SELECT * FROM import_batches")).put("import_tracks",rows("SELECT * FROM import_tracks")).put("import_spans",rows("SELECT * FROM import_spans")).put("manual_imports",rows("SELECT * FROM manual_imports")).put("suppressed_spans",rows("SELECT * FROM suppressed_spans"))
     /** The change journal is installed only after explicit device-pairing opt-in. */
     @Synchronized internal fun lanStore():LanSyncStore {
         check(!projectionOnly);LanChangeJournal.install(db);val owner=this
@@ -619,10 +1024,15 @@ class DiaryDatabase private constructor(private val context:Context,private val 
             }
         }
     }
+    @Volatile private var cachedNeededArt:String?=null
+    @Volatile private var cachedNeededArtRevision:Long=-1L
     @Synchronized fun neededArtwork():String {
+        updateProjectionRevision()
+        val cached=cachedNeededArt
+        if(cached!=null&&cachedNeededArtRevision==revision)return cached
         val result=JSONArray()
-        rows("SELECT track id FROM diary_rows GROUP BY track ORDER BY MAX(end) DESC LIMIT 300").objects().forEach{row->val id=row.getString("id");if(!java.io.File(images,ArtworkKeys.hash(id)+".jpg").isFile&&result.length()<80)result.put(id)}
-        return result.toString()
+        rows("SELECT track id FROM spans GROUP BY track ORDER BY MAX(end) DESC LIMIT 300").objects().forEach{row->val id=row.getString("id");if(!java.io.File(images,ArtworkKeys.hash(id)+".jpg").isFile&&result.length()<80)result.put(id)}
+        return result.toString().also{cachedNeededArt=it;cachedNeededArtRevision=revision}
     }
     companion object {
         @Volatile private var instance:DiaryDatabase?=null

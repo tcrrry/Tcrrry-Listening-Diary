@@ -38,7 +38,7 @@ internal fun recentPlayingKey(report:DiaryReport,stops:List<CoverStop>,now:Long=
 }
 
 @Composable internal fun RecentListeningHeader(c:DiaryController,r:DiaryReport,history:()->Unit,open:(Play,String)->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope){
-    val stops=remember(r.history,r.segments){CoverCarousel.stops(r.history,r.segments)}
+    val stops=remember(RefKey(r.history),RefKey(r.segments)){CoverCarousel.stops(r.history,r.segments)}
     val list=rememberLazyListState()
     var followLatest by rememberSaveable{mutableStateOf(true)}
     LaunchedEffect(list){snapshotFlow{list.isScrollInProgress}.collect{moving->if(!moving)followLatest=list.firstVisibleItemIndex==0&&list.firstVisibleItemScrollOffset==0}}

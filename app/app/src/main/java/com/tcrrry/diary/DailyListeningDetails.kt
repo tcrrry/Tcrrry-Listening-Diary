@@ -201,20 +201,31 @@ internal fun periodDurationDelta(current:Long,previous:Long,previousName:String)
     return "${if(delta>0)"多听" else "少听"} ${value} 分钟"
 }
 
+@Immutable
 private data class ListeningSummaryStats(val first:Play?,val hours:List<Long>,val sessions:Int,val longest:Long,val deviceShares:List<Pair<String,Long>>,val elapsed:Long,val total:Long)
+private data class CachedStatsEntry(val playsRef:List<Play>,val spansRef:List<Play>,val stats:ListeningSummaryStats)
+private data class CachedComparisonEntry(val revision:Long,val minute:Long,val sameTime:Boolean,val previousMs:Long?)
+private data class CachedStylesEntry(val playsRef:List<Play>,val factsRef:SummaryFacts,val metadataEpoch:Long,val catalogSize:Int,val styles:List<GenreStat>)
 
 @Composable internal fun DailyListeningSummary(c:DiaryController,plays:List<Play>,spans:List<Play>,modifier:Modifier=Modifier,range:DiaryRange=DiaryRange.DAY){
     if(plays.isEmpty())return
-    val stats by key(c.day,range,c.dayPolicy,c.demo){produceState<ListeningSummaryStats?>(null,spans,plays,range){
-        value=withContext(Dispatchers.Default){
+    val cachedStatsEntry=remember(c.day,range,c.dayPolicy,c.demo){c.cachedListeningSummaries["stats:${range.name}"] as? CachedStatsEntry}
+    val stats by key(c.day,range,c.dayPolicy,c.demo){produceState<ListeningSummaryStats?>(cachedStatsEntry?.stats,RefKey(spans),RefKey(plays),range){
+        val existing=c.cachedListeningSummaries["stats:${range.name}"] as? CachedStatsEntry
+        if(existing!=null&&existing.playsRef===plays&&existing.spansRef===spans){value=existing.stats;return@produceState}
+        if(range!=DiaryRange.DAY||c.navigationSettling||c.periodSwipePosition!=null)c.awaitNavigationSettled()
+        val computed=withContext(Dispatchers.Default){
             val parts=spans.ifEmpty{plays};val grouped=ListeningSessions.group(parts)
             ListeningSummaryStats(parts.minByOrNull{it.start},creditedDailyHours(parts),grouped.size,grouped.maxOfOrNull{it.ms}?:0L,deviceListeningTotals(parts),parts.sumOf{it.ms},plays.sumOf{it.ms}.coerceAtLeast(1))
         }
+        c.cachedListeningSummaries["stats:${range.name}"]=CachedStatsEntry(plays,spans,computed)
+        value=computed
     }}
     val hours=stats?.hours?:List(24){0L}
     val peak=remember(hours){hours.indices.maxByOrNull{hours[it]}?:0}
     val sessions=stats?.sessions
-    var dailySameTime by remember(c.day,range,c.dayPolicy){mutableStateOf(false)}
+    val cachedCmpEntry=remember(c.day,range,c.dayPolicy,c.demo){c.cachedListeningSummaries["cmp:${range.name}"] as? CachedComparisonEntry}
+    var dailySameTime by remember(c.day,range,c.dayPolicy){mutableStateOf(cachedCmpEntry?.sameTime?:false)}
     var comparisonMinute by remember{mutableLongStateOf(System.currentTimeMillis()/60000)}
     LaunchedEffect(range,c.foreground){
         if(range==DiaryRange.DAY&&c.foreground){
@@ -222,8 +233,16 @@ private data class ListeningSummaryStats(val first:Play?,val hours:List<Long>,va
         }
     }
     val previousName=when(range){DiaryRange.DAY->if(dailySameTime)"昨天同期"else "昨天";DiaryRange.WEEK->"上周同期";DiaryRange.MONTH->"上月同期";DiaryRange.YEAR->"去年同期"}
-    val comparison by key(c.day,range,c.dayPolicy,c.demo){produceState<Pair<Long?,Boolean>>(null to true,c.dataRevision,if(range==DiaryRange.DAY)comparisonMinute else 0L){
+    val comparisonMinuteKey=if(range==DiaryRange.DAY)comparisonMinute else 0L
+    val comparison by key(c.day,range,c.dayPolicy,c.demo){produceState<Pair<Long?,Boolean>>(cachedCmpEntry?.let{it.previousMs to false}?:(null to true),c.dataRevision,comparisonMinuteKey){
         try{
+            val existing=c.cachedListeningSummaries["cmp:${range.name}"] as? CachedComparisonEntry
+            if(existing!=null&&existing.revision==c.dataRevision&&existing.minute==comparisonMinuteKey){
+                dailySameTime=existing.sameTime
+                value=existing.previousMs to false
+                return@produceState
+            }
+            if(range!=DiaryRange.DAY||c.navigationSettling||c.periodSwipePosition!=null)c.awaitNavigationSettled()
             val previousDay=periodShift(c.day,range,-1)
             val now=java.time.ZonedDateTime.now()
             val today=c.currentListeningDay(now)
@@ -238,29 +257,35 @@ private data class ListeningSummaryStats(val first:Play?,val hours:List<Long>,va
                 else if(range!=DiaryRange.DAY)report.dayTotals.filterKeys{it>=comparisonBounds.from&&it<=comparisonBounds.to}.values.sum()else report.ms
             }else withContext(Dispatchers.IO){
                 PeriodDurationReader.read(c.activity,comparisonBounds,c.dayPolicy,until)?:run {
-                    val db=DiaryDatabase.projection(c.activity)
-                    if(until!=null)durationUntil(db.readReportVersioned(comparisonBounds,c.dayPolicy).first.segments,until)
-                    else db.durationForBounds(comparisonBounds,c.dayPolicy)
+                    if(until!=null){
+                        val local=if(range==DiaryRange.DAY)DiaryDatabase.get(c.activity).readDayScreen(previousDay,c.dayPolicy) else DiaryDatabase.get(c.activity).readPeriodScreen(comparisonBounds,c.dayPolicy)
+                        durationUntil((local?.first?:DiaryDatabase.projection(c.activity).readReportVersioned(comparisonBounds,c.dayPolicy).first).segments,until)
+                    }else DiaryDatabase.projection(c.activity).durationForBounds(comparisonBounds,c.dayPolicy)
                 }
             }
+            c.cachedListeningSummaries["cmp:${range.name}"]=CachedComparisonEntry(c.dataRevision,comparisonMinuteKey,until!=null,previousMs)
             value=previousMs to false
         }catch(e:kotlinx.coroutines.CancellationException){throw e}catch(_:Exception){value=null to false}
     }}
     val facts=c.summaryFacts
-    val artistContext by produceState<List<Play>>(emptyList(),plays,facts){
-        value=withContext(Dispatchers.Default){
-            val names=plays.map{it.artist}.toSet()
-            (facts.songs.filter{it.artist in names}+plays).distinctBy{it.id}
+    val cachedStylesEntry=remember(c.day,range,c.dayPolicy,c.demo){c.cachedListeningSummaries["styles:${range.name}"] as? CachedStylesEntry}
+    val styles by key(c.day,range,c.dayPolicy,c.demo){produceState(cachedStylesEntry?.styles?:emptyList(),RefKey(plays),facts,c.previewMetadataEpoch,c.catalogFacts.size){
+        val existing=c.cachedListeningSummaries["styles:${range.name}"] as? CachedStylesEntry
+        if(existing!=null&&existing.playsRef===plays&&existing.factsRef===facts&&existing.metadataEpoch==c.previewMetadataEpoch&&existing.catalogSize==c.catalogFacts.size){
+            value=existing.styles
+            return@produceState
         }
-    }
-    val ids=remember(artistContext){artistContext.map{it.id}.distinct()}
-    val cachedMetadata by produceState<Map<String,CatalogFact>>(emptyMap(),ids,c.previewMetadataEpoch){
-        value=withContext(Dispatchers.IO){CatalogMetadata.cached(java.io.File(c.activity.filesDir,"art"),ids).objects().map{CatalogFact.parse(it)}.associateBy{it.id}}
-    }
-    val metadata=remember(cachedMetadata,c.catalogFacts){cachedMetadata+c.catalogFacts}
-    val styles by produceState(emptyList<GenreStat>(),plays,metadata,artistContext){
-        value=withContext(Dispatchers.Default){mainstreamGenreStats(plays,metadata,artistContext)}
-    }
+        if(range!=DiaryRange.DAY||c.navigationSettling||c.periodSwipePosition!=null)c.awaitNavigationSettled()
+        val computed=withContext(Dispatchers.Default){
+            val names=plays.map{it.artist}.toSet()
+            val artistContext=(facts.songs.filter{it.artist in names}+plays).distinctBy{it.id}
+            val ids=artistContext.map{it.id}.distinct()
+            val cachedMetadata=withContext(Dispatchers.IO){CatalogMetadata.cached(java.io.File(c.activity.filesDir,"art"),ids).objects().map{CatalogFact.parse(it)}.associateBy{it.id}}
+            mainstreamGenreStats(plays,cachedMetadata+c.catalogFacts,artistContext)
+        }
+        c.cachedListeningSummaries["styles:${range.name}"]=CachedStylesEntry(plays,facts,c.previewMetadataEpoch,c.catalogFacts.size,computed)
+        value=computed
+    }}
     val matched=styles.filter{it.name!="未匹配"}
     Column(modifier.fillMaxWidth().testTag("daily-listening-summary").clip(RoundedCornerShape(22.dp)).background(Muted.copy(alpha=.045f)).animateContentSize(tween(180)).padding(17.dp),verticalArrangement=Arrangement.spacedBy(13.dp)){
         Text(when(range){DiaryRange.DAY->"这一天的声音";DiaryRange.WEEK->"这一周的声音";DiaryRange.MONTH->"这个月的声音";DiaryRange.YEAR->"这一年的声音"},fontSize=22.sp,fontWeight=FontWeight.Bold)

@@ -56,13 +56,19 @@ final class AppleTrackImages {
     boolean missingDetails(String id){Hint h=hints.get(id);return h!=null&&(!knownArtist(h.artist)||h.album.isBlank());}
     static String displayName(String value){return HAN.get().transliterate(value);}
     boolean knows(String id){return hints.containsKey(id);}
+    private static final java.util.regex.Pattern NORM_STRIP=java.util.regex.Pattern.compile("[\\p{P}\\p{Z}\\s]+");
+    private static final java.util.regex.Pattern ALBUM_SUFFIX=java.util.regex.Pattern.compile("(?i)\\s*[-–—]\\s*(single|ep)\\s*$");
+    private static final java.util.regex.Pattern ARTIST_SPLIT=java.util.regex.Pattern.compile("\\s*(?:&|、|;| feat\\. | featuring )\\s*");
+    private static final java.util.regex.Pattern IMAGE_SIZE=java.util.regex.Pattern.compile("/[0-9]+x[0-9]+[^/]*$");
+    private static final java.util.regex.Pattern DIGITS_ID=java.util.regex.Pattern.compile("[0-9]{5,22}");
     private static final ThreadLocal<android.icu.text.Transliterator> HAN=ThreadLocal.withInitial(()->android.icu.text.Transliterator.getInstance("Traditional-Simplified"));
     String artist(String id){Hint h=hints.get(id);return h==null?"":h.artist;}
-    static String normalized(String s){return HAN.get().transliterate(Normalizer.normalize(s,Normalizer.Form.NFKC)).toLowerCase(Locale.ROOT).replaceAll("[\\p{P}\\p{Z}\\s]+","");}
-    static String albumName(String s){return normalized(s.replaceFirst("(?i)\\s*[-–—]\\s*(single|ep)\\s*$",""));}
+    static String normalized(String s){if(s==null||s.isEmpty())return "";return NORM_STRIP.matcher(HAN.get().transliterate(Normalizer.normalize(s,Normalizer.Form.NFKC)).toLowerCase(Locale.ROOT)).replaceAll("");}
+    static String albumName(String s){return normalized(ALBUM_SUFFIX.matcher(s).replaceFirst(""));}
     static boolean artistMatches(String recorded,String found){
-        if(normalized(recorded).equals(normalized(found)))return true;
-        for(String part:recorded.split("\\s*(?:&|、|;| feat\\. | featuring )\\s*"))if(normalized(part).equals(normalized(found)))return true;
+        String normFound=normalized(found);
+        if(normalized(recorded).equals(normFound))return true;
+        for(String part:ARTIST_SPLIT.split(recorded))if(normalized(part).equals(normFound))return true;
         return false;
     }
     static Set<String> edition(String value){
@@ -71,13 +77,13 @@ final class AppleTrackImages {
         return result;
     }
     static String imageIdentity(String url){
-        try{return new java.net.URI(url).getPath().replaceFirst("/[0-9]+x[0-9]+[^/]*$","");}catch(Exception e){return url;}
+        try{return IMAGE_SIZE.matcher(new java.net.URI(url).getPath()).replaceFirst("");}catch(Exception e){return url;}
     }
     static JSONObject match(Hint h,JSONArray rows)throws JSONException {
         List<JSONObject> exact=new ArrayList<>(),fallback=new ArrayList<>();
         for(int i=0;i<rows.length();i++){
             JSONObject row=rows.getJSONObject(i);
-            if(!row.optString("trackId").matches("[0-9]{5,22}")||!normalized(h.title).equals(normalized(row.optString("trackName")))||(knownArtist(h.artist)&&!artistMatches(h.artist,row.optString("artistName")))||!DiaryArtwork.allowed(row.optString("artworkUrl100")))continue;
+            if(!DIGITS_ID.matcher(row.optString("trackId")).matches()||!normalized(h.title).equals(normalized(row.optString("trackName")))||(knownArtist(h.artist)&&!artistMatches(h.artist,row.optString("artistName")))||!DiaryArtwork.allowed(row.optString("artworkUrl100")))continue;
             long duration=row.optLong("trackTimeMillis"),delta=Math.abs(duration-h.duration);
             if(h.duration>0&&(duration<=0||delta>(knownArtist(h.artist)?10000:5000)))continue;
             if(h.album.isBlank()||albumName(h.album).equals(albumName(row.optString("collectionName"))))exact.add(row);

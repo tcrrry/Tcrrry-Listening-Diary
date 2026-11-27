@@ -4,7 +4,7 @@ val signing = Properties().apply { rootProject.file(".private/signing.properties
 android {
     namespace = "com.tcrrry.diary"
     compileSdk = 37
-    defaultConfig { applicationId = "com.tcrrry.listeningdiary.app"; minSdk = 31; targetSdk = 37; versionCode = 174; versionName = "1.3.1" }
+    defaultConfig { applicationId = "com.tcrrry.listeningdiary.app"; minSdk = 31; targetSdk = 37; versionCode = 181; versionName = "1.4.0" }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     signingConfigs { if (rootProject.file(".private/diary-preview.keystore").exists()) create("preview") { storeFile=rootProject.file(".private/diary-preview.keystore"); storePassword=signing.getProperty("storePassword"); keyAlias="diary-preview"; keyPassword=signing.getProperty("keyPassword") } }

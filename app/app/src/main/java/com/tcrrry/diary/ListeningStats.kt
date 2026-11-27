@@ -10,16 +10,24 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal fun multiSongArtists(plays:List<Play>)=plays.filter{!it.imported||it.artist.isNotBlank()&&it.artist!="未知歌手"}.groupBy{it.artist}.count{(_,songs)->songs.map{it.id}.distinct().size>1}
 
-@Composable internal fun ListeningStats(r:DiaryReport,modifier:Modifier=Modifier,onInfo:(String)->Unit={}){
+@Composable internal fun ListeningStats(r:DiaryReport,modifier:Modifier=Modifier,knownAlbumCount:Int?=null,knownMultiArtistCount:Int?=null,onInfo:(String)->Unit={}){
     var changes by rememberSaveable{mutableStateOf(false)};var hours by rememberSaveable{mutableStateOf(false)}
     var albums by rememberSaveable{mutableStateOf(false)};var multiple by rememberSaveable{mutableStateOf(false)}
     val changeCount=r.manualSkips?.toString()?:"—"
     val changeLabel=if(r.manualSkips!=null)"次切歌·记录"else "切歌未采集"
-    val albumCount=if(albums)remember(r.history){reportAlbums(r).size}else 0
-    val artistCount=if(multiple)remember(r.history){multiSongArtists(r.history)}else 0
+    val computedAlbums by produceState(knownAlbumCount?:0,RefKey(r.history),albums,knownAlbumCount){
+        value=knownAlbumCount?:if(albums)withContext(Dispatchers.Default){reportAlbums(r).size}else 0
+    }
+    val computedMultiple by produceState(knownMultiArtistCount?:0,RefKey(r.history),multiple,knownMultiArtistCount){
+        value=knownMultiArtistCount?:if(multiple)withContext(Dispatchers.Default){multiSongArtists(r.history)}else 0
+    }
+    val albumCount=knownAlbumCount?:computedAlbums
+    val artistCount=knownMultiArtistCount?:computedMultiple
     val numbers=listOf(if(changes)changeCount else "${r.plays}",if(hours)reportHours(r.ms) else minutes(r.ms),if(albums)"$albumCount" else "${r.tracks}",if(multiple)"$artistCount" else "${r.artists}")
     Row(modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
         SwitchStat(Modifier.weight(1f),numbers.maxOf{it.length},"stat-plays",changes,{active->if(active)changeCount to changeLabel else "${r.plays}" to "次播放"}){changes=!changes}

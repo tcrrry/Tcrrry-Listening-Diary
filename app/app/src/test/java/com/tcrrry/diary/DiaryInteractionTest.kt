@@ -1707,6 +1707,27 @@ class DiaryInteractionTest {
         ui.waitUntil(10000){ui.activity.controller.report.history.any{it.id==track.id&&it.artist=="旺仔小乔"}};ui.waitForIdle();ui.onAllNodesWithText("旺仔小乔").assertCountEquals(1);ui.onNodeWithText("未知歌手").assertDoesNotExist();shot("app-metadata-detail")
         ui.onNodeWithContentDescription("返回日记").performClick();ui.onNodeWithContentDescription("返回日记").performClick();ui.onNodeWithTag("home-scroll").performScrollToNode(hasText("常听歌手"));ui.onNodeWithTag("artist-card:旺仔小乔").assertExists();shot("app-metadata-artist")
     }
+    @Test fun preloadSummaryPopulatesRealHistoryAndSurvivesPeriodSwitches(){
+        val day=java.time.LocalDate.of(2026,10,23)
+        val at=day.atTime(12,0).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val c=ui.activity.controller
+        ui.runOnUiThread{
+            c.stop()
+            val db=DiaryDatabase.get(ui.activity)
+            db.ingest(org.json.JSONObject().put("sourceId","preload-summary-test")
+                .put("tracks",org.json.JSONArray().put(org.json.JSONObject().put("id","preload-song").put("title","Preload Song").put("artist","Preload Artist").put("album","Album").put("duration",240000)))
+                .put("spans",org.json.JSONArray().put(org.json.JSONObject().put("id",1).put("track","preload-song").put("visit","preload-visit").put("day",day.toString()).put("zone",java.time.ZoneId.systemDefault().id).put("start",at).put("end",at+180000).put("ms",180000))))
+            c.preview(false);c.select(day,DiaryRange.DAY)
+            c.preloadSummary()
+            c.select(day,DiaryRange.WEEK)
+        }
+        ui.waitUntil(10000){org.robolectric.shadows.ShadowLooper.idleMainLooper();c.summaryFacts.report.history.any{it.id=="preload-song"}}
+        Assert.assertFalse(c.summary)
+        ui.runOnUiThread{c.openSummary()}
+        ui.waitForIdle()
+        Assert.assertFalse(c.summaryLoading)
+        Assert.assertEquals("preload-song",c.summaryFacts.report.history.first().id)
+    }
     private fun openHistory(){ui.onNodeWithTag("home-scroll").performScrollToNode(hasText("常听歌手"));shot("app-artists");ui.onNodeWithTag("home-scroll").performScrollToNode(hasTestTag("day-history-link"));ui.onNodeWithTag("day-history-link").performClick();ui.waitForIdle()}
     private fun resetCarousel(count:Int=24){ui.runOnUiThread{ui.activity.controller.stop()};ui.mainClock.autoAdvance=false;ui.mainClock.advanceTimeByFrame();ui.onNodeWithTag("cover-carousel").performScrollToIndex(CoverCarousel.firstPage(count));ui.mainClock.advanceTimeByFrame();ui.runOnUiThread{ui.activity.controller.start()};ui.mainClock.advanceTimeByFrame();ui.waitForIdle()}
     private fun shot(name:String){System.getProperty("diary.preview.dir")?.let{dir->ui.waitForIdle();ui.runOnUiThread{val view=android.view.inspector.WindowInspector.getGlobalWindowViews().lastOrNull{it.isShown&&it.width>0&&it.height>0}?:ui.activity.window.decorView;val bitmap=android.graphics.Bitmap.createBitmap(view.width,view.height,android.graphics.Bitmap.Config.ARGB_8888);view.draw(android.graphics.Canvas(bitmap));val file=java.io.File(dir,"$name.png");file.parentFile?.mkdirs();file.outputStream().use{bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}}}}

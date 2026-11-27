@@ -66,7 +66,7 @@ private data class AdaptiveWeek(val intervals:List<IntRange>,val hours:List<List
 @Composable internal fun WeeklyTimeHeatmap(c:DiaryController,spans:List<Play>,dates:List<LocalDate>,totals:Map<LocalDate,Long>,selected:LocalDate,select:(LocalDate)->Unit,show:(LocalDate?)->Unit){
     val policy=c.dayPolicy;val start=HourlyListening.startHour(policy)
     val today by produceState(listeningToday(ZonedDateTime.now(),policy),policy,c.dataRevision){value=c.currentListeningDay()}
-    val data by produceState<AdaptiveWeek?>(null,spans,dates,policy){value=withContext(Dispatchers.Default){val hours=weeklyHours(spans,dates,policy);AdaptiveWeek(adaptiveWeekIntervals(hours),hours)}}
+    val data by produceState<AdaptiveWeek?>(null,RefKey(spans),dates,policy){value=withContext(Dispatchers.Default){val hours=weeklyHours(spans,dates,policy);AdaptiveWeek(adaptiveWeekIntervals(hours),hours)}}
     val intervals=data?.intervals?: (0 until 24 step 3).map{it until it+3}
     Column(Modifier.fillMaxWidth().padding(top=18.dp).testTag("week-history-chart").testTag("weekly-time-heatmap")){
         Text("一周听歌时段",fontSize=18.sp,fontWeight=FontWeight.Bold)

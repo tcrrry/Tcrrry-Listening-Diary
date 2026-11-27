@@ -21,15 +21,19 @@ internal fun discoveryArtistMembers(name:String):List<String> =
     name.split(Regex("""\s+(?:&|feat\.|featuring)\s+|,\s+|、""",RegexOption.IGNORE_CASE)).map{it.trim()}.filter{it.isNotEmpty()}
 
 @Composable private fun rememberNewListening(c:DiaryController,range:DiaryRange,report:DiaryReport):WeeklyExtras? {
-    val data by produceState<WeeklyExtras?>(null,c.day,range,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch,report.history) {
+    val cached=remember(c.day,range,c.dayPolicy,c.demo){c.cachedDiscoveries[range]?.extras}
+    val data by produceState<WeeklyExtras?>(cached,c.day,range,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch,RefKey(report.history)) {
         try {
+            val hit=c.cachedDiscoveries[range]?.takeIf{it.revision==c.dataRevision&&it.metadataEpoch==c.previewMetadataEpoch&&it.reportRef===report}?.extras
+            if(hit!=null){value=hit;return@produceState}
+            c.awaitNavigationSettled()
             val candidates=withContext(Dispatchers.Default){report.history.filter{!it.imported||it.title!="未知歌曲"}}
             val songs=candidates.map{it.id}.toSet()
             val artists=candidates.map{it.artist}.filter{AppleTrackImages.knownArtist(it)}.toSet()
             val discovered=if(c.demo)songs to artists else withContext(Dispatchers.IO){
                 DiaryDatabase.discovery(c.activity).periodNewIdentities(c.day,range,c.dayPolicy,songs,artists)
             }
-            value=withContext(Dispatchers.Default){
+            val built=withContext(Dispatchers.Default){
                 val firstTimes=candidates.groupBy{it.id}.mapValues{(_,plays)->plays.minOf{it.start}}
                 WeeklyExtras(
                     sortedPlays(candidates.filter{it.id in discovered.first},SortOrder.COUNT).map{play->
@@ -40,6 +44,8 @@ internal fun discoveryArtistMembers(name:String):List<String> =
                     }
                 )
             }
+            c.cachedDiscoveries[range]=DiaryController.DiscoveryCacheEntry(c.dataRevision,c.previewMetadataEpoch,report,built)
+            value=built
         } catch(e:kotlinx.coroutines.CancellationException){throw e}
         catch(_:Exception){value=WeeklyExtras(emptyList(),emptyList())}
     }

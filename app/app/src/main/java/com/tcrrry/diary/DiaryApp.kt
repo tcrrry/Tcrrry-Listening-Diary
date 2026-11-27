@@ -58,12 +58,13 @@ import kotlin.math.*
 
 @Composable internal fun Text(text:String,modifier:Modifier=Modifier,color:Color=Color.Unspecified,fontSize:TextUnit=14.sp,fontWeight:FontWeight?=FontWeight.Medium,letterSpacing:TextUnit=TextUnit.Unspecified,maxLines:Int=Int.MAX_VALUE,overflow:TextOverflow=TextOverflow.Clip,textAlign:TextAlign?=null){
     val weight=FontWeight(((fontWeight?.weight?:500)+100).coerceIn(600,900))
-    val base=LocalAMTypeface.current
-    val family=remember(base,weight){base?.let{FontFamily(android.graphics.Typeface.create(it,weight.weight,false))}?:FontFamily.SansSerif}
+    val snapped=((weight.weight+50)/100*100).coerceIn(600,900)
+    val family=LocalAMFontFamilies.current[snapped]?:LocalAMTypeface.current?.let{remember(it,weight){FontFamily(android.graphics.Typeface.create(it,weight.weight,false))}}?:FontFamily.SansSerif
     MaterialText(text=text,modifier=modifier,color=color,fontSize=fontSize,fontWeight=weight,fontFamily=family,style=LocalTextStyle.current.copy(fontSynthesis=FontSynthesis.All),letterSpacing=letterSpacing,maxLines=maxLines,overflow=overflow,textAlign=textAlign,lineHeight=fontSize*1.28f)
 }
 
 private val LocalAMTypeface=staticCompositionLocalOf<android.graphics.Typeface?>{null}
+private val LocalAMFontFamilies=staticCompositionLocalOf<Map<Int,FontFamily>>{emptyMap()}
 internal val LocalAlbumSurface=staticCompositionLocalOf<()->Color>{{Color.White}}
 private val LocalDiaryFont=staticCompositionLocalOf<FontFamily>{FontFamily.SansSerif}
 internal val Ink:Color @Composable get()=MaterialTheme.colorScheme.background
@@ -74,7 +75,7 @@ private val Palette=listOf(Color(0xffef91b7),Color(0xffd1a5fa),Color(0xff8da5ff)
 internal val PeriodSeekFractionKey=SemanticsPropertyKey<Float>("PeriodSeekFraction")
 internal val HistoryScrollIndexKey=SemanticsPropertyKey<Int>("HistoryScrollIndex")
 internal val PreparedPeriodsKey=SemanticsPropertyKey<String>("PreparedPeriods")
-internal data class PreparedPeriod(val report:DiaryReport,val computed:PeriodComputed?,val revision:Long,val metadataEpoch:Long=0,val provisional:Boolean=false)
+internal data class PreparedPeriod(val report:DiaryReport,val computed:PeriodComputed?,val revision:Long,val metadataEpoch:Long=0,val provisional:Boolean=false,val trackMetaVersion:Long=0)
 private data class Selection(val play:Play,val key:String,val artist:String?=null,val album:String?=null)
 internal class DetailActions(val shared:SharedTransitionScope,val visibility:AnimatedVisibilityScope,val artist:(String,String)->Unit,val album:(Play,String)->Unit,val track:(Play,String)->Unit)
 internal val LocalDetailActions=staticCompositionLocalOf<DetailActions?>{null}
@@ -152,9 +153,10 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
     val dark=when(c.theme){DiaryThemeChoice.SYSTEM->isSystemInDarkTheme();DiaryThemeChoice.LIGHT->false;DiaryThemeChoice.DARK->true}
     val scheme=if(dark)darkColorScheme(primary=Color(0xfffb6f8b),background=Color(0xff0a0b0e),surface=Color(0xff191a20),onSurface=Color(0xfff3f0fa),onSurfaceVariant=Color(0xffa8adb8),outlineVariant=Color.White.copy(alpha=.12f))else lightColorScheme(primary=Color(0xffcf315c),background=Color(0xfffffdfc),surface=Color.White,onSurface=Color(0xff161619),onSurfaceVariant=Color(0xff77787e),outlineVariant=Color.Black.copy(alpha=.08f))
     val font=remember(c.amTypeface){c.amTypeface?.let{FontFamily(it)}?:FontFamily.SansSerif}
+    val amFontFamilies=remember(c.amTypeface){val base=c.amTypeface;if(base==null)emptyMap()else listOf(600,700,800,900).associateWith{w->FontFamily(android.graphics.Typeface.create(base,w,false))}}
     SideEffect{val appearance=android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;c.activity.window.insetsController?.setSystemBarsAppearance(if(dark)0 else appearance,appearance);c.activity.window.statusBarColor=android.graphics.Color.TRANSPARENT;c.activity.window.navigationBarColor=scheme.background.toArgb()}
     MaterialTheme(colorScheme=scheme){
-        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface,LocalDiaryFont provides font,LocalAMTypeface provides c.amTypeface){
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface,LocalDiaryFont provides font,LocalAMTypeface provides c.amTypeface,LocalAMFontFamilies provides amFontFamilies){
         val updateScope=rememberCoroutineScope()
         val updates=remember(c.activity){DiaryUpdateChecker(c.activity,updateScope){c.foreground}}
         LaunchedEffect(c.foreground){if(c.foreground){delay(4000);updates.check(false)}}
@@ -177,7 +179,18 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
             Canvas(Modifier.fillMaxSize().layerBackdrop(backdrop)){
                 drawRect(Brush.verticalGradient(listOf(atmosphere.top.value,atmosphere.paper.value),startY=0f,endY=size.height*.48f))
             }
-            CompositionLocalProvider(LocalAlbumSurface provides {atmosphere.paper.value}){SharedTransitionLayout(Modifier.graphicsLayer{alpha=arrival;translationY=(1f-arrival)*16.dp.toPx()}) {
+            CompositionLocalProvider(LocalAlbumSurface provides {atmosphere.paper.value}){
+            val rootView=LocalView.current
+            val inspectionMode=LocalInspectionMode.current
+            LaunchedEffect(c.periodSwipePosition!=null,c.navigationSettling,c.verticalScrolling,inspectionMode){
+                if(!inspectionMode&&(c.periodSwipePosition!=null||c.navigationSettling||c.verticalScrolling)){
+                    while(isActive&&(c.periodSwipePosition!=null||c.navigationSettling||c.verticalScrolling)){
+                        boostViewFrameRate(rootView)
+                        if(c.periodSwipePosition!=null||c.navigationSettling)withFrameNanos{} else delay(250)
+                    }
+                }
+            }
+            SharedTransitionLayout(Modifier.graphicsLayer{alpha=arrival;translationY=(1f-arrival)*16.dp.toPx()}) {
                 AnimatedContent(selection,transitionSpec={(fadeIn(tween(220))+(if(targetState==null) EnterTransition.None else scaleIn(initialScale=.985f,animationSpec=tween(420)))) togetherWith fadeOut(tween(160))},label="report detail"){selected->
                     val detailVisibility=this
                     val detailActions=DetailActions(this@SharedTransitionLayout,detailVisibility,
@@ -325,10 +338,16 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
 @Composable private fun Today(c:DiaryController,b:Backdrop,calendar:()->Unit,settings:()->Unit,open:(Play,String)->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope,onTint:(List<Color>)->Unit,allowAuto:Boolean,summaryVisibility:AnimatedVisibilityScope){
     val navigationState=rememberSaveableStateHolder()
     val list=rememberLazyListState();val r=c.report
-    LaunchedEffect(c.range,c.summary,c.loading,c.foreground,c.demo,c.dataRevision,c.previewMetadataEpoch){
-        if(!c.summary&&!c.loading&&(c.foreground||c.demo)){
-            delay(if(c.demo)600 else 30000)
-            if(!c.demo)kotlinx.coroutines.withTimeoutOrNull(5000){snapshotFlow{listOf(DiaryRange.WEEK,DiaryRange.MONTH,DiaryRange.YEAR).all{c.preparedPeriods.containsKey(it)}}.first{it}}
+    LaunchedEffect(c.dayPolicy,c.foreground,c.demo,c.previewMetadataEpoch){
+        if(c.foreground||c.demo){
+            snapshotFlow{!c.loading}.first{it}
+            delay(if(c.demo)400 else 1000)
+            c.awaitNavigationSettled()
+            if(!c.summary)c.preloadSummary()
+        }
+    }
+    LaunchedEffect(c.range,c.periodSwipePosition?.let{it>3.01f}==true){
+        if(c.range==DiaryRange.YEAR&&(c.periodSwipePosition?:0f)>3.01f&&!c.summary&&c.summaryFacts.report.history.isEmpty()){
             c.preloadSummary()
         }
     }
@@ -377,47 +396,59 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         val periodState=remember{SeekableTransitionState(c.range)}
         val periodTransition=rememberTransition(periodState,label="period navigation")
         val dragIndex=c.periodSwipePosition?.let{position->if(position>c.range.ordinal+.001f)c.range.ordinal+1 else if(position<c.range.ordinal-.001f)c.range.ordinal-1 else c.range.ordinal}?.takeIf{it in 0..3}
-        val prepared=remember(c.day,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch){c.activePreparedPeriods()}
+        val prepared=c.activePreparedPeriods()
         val canWarm=c.periodSwipePosition==null
-        LaunchedEffect(c.day,c.range,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch,c.loading,c.foreground,c.syncing,canWarm){
-            if(!c.loading&&canWarm&&(c.foreground||c.demo)&&(c.demo||!c.syncing)){
+        LaunchedEffect(c.day,c.range,c.dayPolicy,c.demo,c.previewMetadataEpoch,c.loading,c.foreground,canWarm){
+            if(!c.loading&&canWarm&&(c.foreground||c.demo)){
+                if(!c.demo&&c.syncing)kotlinx.coroutines.withTimeoutOrNull(2500){snapshotFlow{!c.syncing}.first{it}}
                 // A cached home report can be visible before the initial collector batch arrives.
                 // Do not let speculative period warming monopolize the shared DB at startup.
-                delay(if(c.demo)150 else 5000)
+                delay(if(c.demo)120 else 700)
+                c.awaitNavigationSettled()
                 val range=c.range;val day=c.day;val revision=c.dataRevision;val policy=c.dayPolicy;val metadataEpoch=c.previewMetadataEpoch
+                val activeMap=c.activePreparedPeriods()
                 // Keep already prepared periods and look ahead beyond the immediate neighbor.
                 val neighbors=DiaryRange.entries.filter{it!=range}.sortedWith(compareBy<DiaryRange>{kotlin.math.abs(it.ordinal-range.ordinal)}.thenByDescending{it.ordinal})
                 for(next in neighbors){
-                    if(prepared[next]?.let{it.revision==revision&&it.metadataEpoch==metadataEpoch}==true)continue
+                    c.awaitNavigationSettled()
+                    if(activeMap[next]?.let{!it.provisional&&(it.revision==revision||((next==DiaryRange.MONTH||next==DiaryRange.YEAR)&&revision-it.revision in 0L..20L))&&it.metadataEpoch==metadataEpoch}==true)continue
                     if(!c.demo){
-                        val disk=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DailyReportCache.read(c.activity,day,policy,next,requireCurrent=true)}
-                        if(disk!=null){
-                            val computed=if(next==DiaryRange.DAY)null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){computePeriod(disk,day,next)}
+                        val disk=kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DailyReportCache.readVersioned(c.activity,day,policy,next,requireCurrent=false)}
+                        if(disk!=null&&(next !in activeMap||disk.second>(activeMap[next]?.revision?:-1L))){
+                            val computed=if(next==DiaryRange.DAY)null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){computePeriod(disk.first,day,next)}
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                            if(c.isPreviewRevisionCurrent(revision))prepared[next]=PreparedPeriod(disk,computed,revision,metadataEpoch,true)
-                            c.images.warmCached(if(computed!=null)periodWarmArtwork(computed,day)else disk.history.asReversed().take(3).map{it.id},720)
-                            continue
+                            c.awaitNavigationSettled()
+                            val curRev=c.activity.getSharedPreferences("diary",android.content.Context.MODE_PRIVATE).getLong("data_revision",0L)
+                            if(disk.second<=curRev)activeMap[next]=PreparedPeriod(disk.first,computed,disk.second,metadataEpoch,disk.second!=curRev,-1L)
+                            c.images.warmCached(if(computed!=null)periodWarmArtwork(computed,day)else disk.first.history.asReversed().take(3).map{it.id},720)
+                            if(disk.second==curRev)continue
                         }
                     }
-                    val loaded=if(c.demo)periodDemoReport(day,next) to revision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(day,next),policy)}
+                    val readMeta=if(c.demo)0L else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){TrackMetadata.shared(java.io.File(c.activity.filesDir,"art")).version()}
+                    val loaded=if(c.demo)periodDemoReport(day,next) to revision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){
+                        val db=DiaryDatabase.get(c.activity)
+                        (if(next==DiaryRange.DAY)db.readDayScreen(day,policy) else db.readPeriodScreen(bounds(day,next),policy))?:DiaryDatabase.projection(c.activity).readReportVersioned(bounds(day,next),policy)
+                    }
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    if(loaded.second!=revision||!c.isPreviewRevisionCurrent(revision)||loaded.first.segments.size>80000)continue
+                    if(loaded.second<revision||loaded.first.segments.size>120000)continue
                     val distance=kotlin.math.abs(next.ordinal-range.ordinal)
                     if(distance==1){
-                        val victims=prepared.keys.filter{it!=range&&kotlin.math.abs(it.ordinal-range.ordinal)>distance}.sortedByDescending{kotlin.math.abs(it.ordinal-range.ordinal)}
-                        for(victim in victims){if(loaded.first.segments.size+prepared.entries.filter{it.key!=range}.sumOf{it.value.report.segments.size}<=96000)break;prepared.remove(victim)}
+                        val victims=activeMap.keys.filter{it!=range&&kotlin.math.abs(it.ordinal-range.ordinal)>distance}.sortedByDescending{kotlin.math.abs(it.ordinal-range.ordinal)}
+                        for(victim in victims){if(loaded.first.segments.size+activeMap.entries.filter{it.key!=range}.sumOf{it.value.report.segments.size}<=160000)break;activeMap.remove(victim)}
                     }
-                    if(loaded.first.segments.size+prepared.entries.filter{it.key!=range}.sumOf{it.value.report.segments.size}>96000)continue
+                    if(loaded.first.segments.size+activeMap.entries.filter{it.key!=range}.sumOf{it.value.report.segments.size}>160000)continue
                     val calculated=if(next==DiaryRange.DAY)null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){computePeriod(loaded.first,day,next)}
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    if(!c.isPreviewRevisionCurrent(revision))continue
-                    prepared[next]=PreparedPeriod(loaded.first,calculated,revision,metadataEpoch)
+                    c.awaitNavigationSettled()
+                    val curRev=if(c.demo)loaded.second else c.activity.getSharedPreferences("diary",android.content.Context.MODE_PRIVATE).getLong("data_revision",0L)
+                    if(c.demo||loaded.second<=curRev)activeMap[next]=PreparedPeriod(loaded.first,calculated,loaded.second,metadataEpoch,!c.isPreviewRevisionCurrent(loaded.second),readMeta)
                     val covers=if(calculated!=null)periodWarmArtwork(calculated,day)else loaded.first.history.asReversed().take(3).map{it.id}
                     c.images.warmCached(covers.distinct().take(10),720)
                 }
-                if(range !in prepared && c.isPreviewRevisionCurrent(revision) && c.report.from==bounds(day,range).from && c.report.segments.size<=80000){
+                if(range !in activeMap && c.report.from==bounds(day,range).from && c.report.segments.size<=120000){
                     val currentCalc=if(range==DiaryRange.DAY)null else c.retainedPeriodComputed?.takeIf{it.report===c.report&&it.day==day&&it.range==range}?:kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){computePeriod(c.report,day,range)}
-                    if(c.isPreviewRevisionCurrent(revision))prepared[range]=PreparedPeriod(c.report,currentCalc,revision,metadataEpoch)
+                    val curRev=if(c.demo)revision else c.activity.getSharedPreferences("diary",android.content.Context.MODE_PRIVATE).getLong("data_revision",0L)
+                    if(c.demo||revision<=curRev)activeMap[range]=PreparedPeriod(c.report,currentCalc,revision,metadataEpoch,!c.isPreviewRevisionCurrent(revision),if(c.demo)0L else -1L)
                 }
             }
         }
@@ -428,9 +459,12 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         LaunchedEffect(c.day,dragIndex,c.dayPolicy,c.demo,c.dataRevision,c.previewMetadataEpoch){
             if(dragIndex!=null&&dragIndex!=c.range.ordinal){
                 val next=DiaryRange.entries[dragIndex]
-                if(prepared[next]?.let{c.isPreviewRevisionCurrent(it.revision)}!=true){
+                if(prepared[next]?.let{c.isPreparedUsable(it)}!=true){
                     previewReport=null;previewComputed=null;previewRange=next
-                    val loaded=if(c.demo)periodDemoReport(c.day,next) to c.dataRevision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DiaryDatabase.projection(c.activity).readReportVersioned(bounds(c.day,next),c.dayPolicy)}
+                    val loaded=if(c.demo)periodDemoReport(c.day,next) to c.dataRevision else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){
+                        val db=DiaryDatabase.get(c.activity)
+                        (if(next==DiaryRange.DAY)db.readDayScreen(c.day,c.dayPolicy) else db.readPeriodScreen(bounds(c.day,next),c.dayPolicy))?:DiaryDatabase.projection(c.activity).readReportVersioned(bounds(c.day,next),c.dayPolicy)
+                    }
                     val calculated=if(next==DiaryRange.DAY)null else kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default){computePeriod(loaded.first,c.day,next)}
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     if(c.isPreviewRevisionCurrent(loaded.second)){previewRevision=loaded.second;previewComputed=calculated;previewReport=loaded.first}
@@ -438,7 +472,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
             }
         }
         // A selected period must have its hero laid out before its shared cover can move.
-        val selectedCached=prepared[c.range]?.takeIf{c.isPreviewRevisionCurrent(it.revision)}
+        val selectedCached=prepared[c.range]?.takeIf{c.isPreparedUsable(it)}
         val committedComputed=if(c.demo&&c.range!=DiaryRange.DAY&&!c.loading)remember(c.report,c.day,c.range){selectedCached?.computed?.takeIf{it.report===c.report}?:computePeriod(c.report,c.day,c.range)} else {
             val retained=c.retainedPeriodComputed?.takeIf{it.report===c.report&&it.day==c.day&&it.range==c.range}
             val result by produceState<PeriodComputed?>(retained,c.report,c.range,c.day,c.loading,selectedCached){
@@ -453,7 +487,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         }
         val selectedReady=if(c.range==DiaryRange.DAY)selectedCached!=null||!c.loading else selectedCached?.computed!=null||(!c.loading&&committedComputed?.report===c.report)
         val dragRange=dragIndex?.let{DiaryRange.entries[it]}
-        val dragCached=dragRange?.let{prepared[it]}?.takeIf{c.isPreviewRevisionCurrent(it.revision)}
+        val dragCached=dragRange?.let{prepared[it]}?.takeIf{c.isPreparedUsable(it)}
         val dragReady=dragRange==null||dragCached!=null||(previewRange==dragRange&&previewReport!=null&&c.isPreviewRevisionCurrent(previewRevision)&&(dragRange==DiaryRange.DAY||previewComputed?.report===previewReport))
         val periodDragPosition=c.periodSwipePosition?.takeIf{it in 0f..3f}
         LaunchedEffect(c.range,periodDragPosition,selectedReady,dragReady){
@@ -467,7 +501,7 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
             slideInHorizontally(tween(320,easing=LinearEasing)){if(forward)it else -it} togetherWith slideOutHorizontally(tween(320,easing=LinearEasing)){if(forward)-it else it}
         },contentKey={it}){period->
         val periodVisibility=this
-        val cached=prepared[period]?.takeIf{c.isPreviewRevisionCurrent(it.revision)}
+        val cached=prepared[period]?.takeIf{c.isPreparedUsable(it)}
         val cachedReport=remember(cached,period){if(period==DiaryRange.DAY)cached?.report?.copy(nowTrackId="") else cached?.report}
         val fallback=previewReport?.takeIf{c.isPreviewRevisionCurrent(previewRevision)}
         var pageReport by remember(period){mutableStateOf(cachedReport?:fallback?.takeIf{previewRange==period}?:if(c.range==period)c.report else DiaryReport())}
@@ -478,9 +512,12 @@ private fun duration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600000)"$
         if(r.history.isEmpty()&&((c.range==period&&c.loading)||(c.range!=period&&!dragReady))) PeriodLoadingPage(c,b,period,calendar,settings)
         else if(period!=DiaryRange.DAY)PeriodReportPage(c,b,calendar,settings,open,shared,visibility,onTint,allowAuto&&c.range==period&&c.periodSwipePosition==null,period,r,{album->secondaryEntry++;favoritesAlbum=album;favoritesOpen=true},{name->if(name.isBlank()){secondaryEntry++;artistSheet=""} else detailActions?.artist?.invoke(name,"period-artist:${period.name}:$name")},periodVisibility,summaryVisibility,cached?.computed?.takeIf{cached.report===r||(c.range==period&&!c.loading&&cached.revision==c.dataRevision)}?:previewComputed?.takeIf{it.report===r}?:committedComputed?.takeIf{it.report===r},{date,computed->secondaryEntry++;periodHistorySnapshot=computed;periodHistoryDate=date?.toString()?:""},allNew={discoveryArtists=it;discoveriesOpen=true})
         else {
-        val covers=remember(r.history){CoverCarousel.history(r.history)}
-        val ranked=remember(r.history){sortedPlays(r.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT).take(5)}
-        val artistPlays=remember(r.history){r.history.groupBy{it.artist}.mapValues{(_,songs)->songs.sumOf{it.effective}}}
+        val covers=remember(RefKey(r.history)){CoverCarousel.history(r.history)}
+        val ranked=remember(RefKey(r.history)){sortedPlays(r.history.filter{!it.imported||it.title!="未知歌曲"},SortOrder.COUNT).take(5)}
+        val artistPlays=remember(RefKey(r.history)){r.history.groupBy{it.artist}.mapValues{(_,songs)->songs.sumOf{it.effective}}}
+        val verticalScrolling=list.isScrollInProgress
+        LaunchedEffect(verticalScrolling){c.setVerticalScrolling(list,verticalScrolling)}
+        DisposableEffect(list){onDispose{c.setVerticalScrolling(list,false)}}
         LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("home-scroll").statusBarsPadding().nestedScroll(nested),contentPadding=PaddingValues(bottom=28.dp)){
             item("header"){
                 Column(Modifier.fillMaxWidth().onSizeChanged{headerHeight=it.height}.padding(horizontal=20.dp).padding(top=13.dp,bottom=13.dp)){
@@ -562,7 +599,7 @@ private fun LazyListScope.sheetItem(key:Any,top:Boolean=false,content:@Composabl
     val liveStops=remember(r.history,r.segments){CoverCarousel.stops(r.history,r.segments)}
     val liveKey=rememberRecentPlayingKey(r,liveStops,c.foreground)
     val liveVisit=liveStops.firstOrNull{it.key==liveKey}?.play?.visit
-    val sessions=remember(r.segments,r.history,sortIndex){val natural=ListeningSessions.group(r.segments);when(sortIndex){0->natural;1->natural.asReversed();else->{val songs=sortedPlays(r.history,SortOrder.entries[sortIndex]);if(songs.isEmpty())emptyList()else listOf(ListeningSession("grouped",songs.minOf{it.start},songs.maxOf{it.end},songs.sumOf{it.ms},songs))}}}
+    val sessions=remember(RefKey(r.segments),RefKey(r.history),sortIndex){val natural=ListeningSessions.group(r.segments);when(sortIndex){0->natural;1->natural.asReversed();else->{val songs=sortedPlays(r.history,SortOrder.entries[sortIndex]);if(songs.isEmpty())emptyList()else listOf(ListeningSession("grouped",songs.minOf{it.start},songs.maxOf{it.end},songs.sumOf{it.ms},songs))}}}
     val panel=LocalAlbumSurface.current
     LazyColumn(state=list,modifier=Modifier.fillMaxSize().historyPanel().testTag("history-scroll").semantics{this[HistoryScrollIndexKey]=list.firstVisibleItemIndex}.nestedScroll(reveal).drawBehind{drawRect(panel())}.statusBarsPadding(),contentPadding=PaddingValues(start=17.dp,end=17.dp,bottom=25.dp)){
         item("header"){
@@ -664,7 +701,7 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
 @Composable private fun Metric(value:String,label:String,color:Color){Column{Text(value,fontSize=26.sp,color=color);Text(label,fontSize=12.sp,color=Muted)}}
 
 @Composable internal fun CoverGallery(c:DiaryController,plays:List<Play>,open:(Play,String)->Unit,shared:SharedTransitionScope,visibility:AnimatedVisibilityScope,onTint:(List<Color>)->Unit,allowAuto:Boolean,onFastChange:(Boolean)->Unit={},segments:List<Play> = plays,periodVisibility:AnimatedVisibilityScope?=null,summaryVisibility:AnimatedVisibilityScope?=null){
-    val stops=remember(plays,segments){CoverCarousel.stops(plays,segments)}
+    val stops=remember(RefKey(plays),RefKey(segments)){CoverCarousel.stops(plays,segments)}
     val playing=rememberRecentPlayingKey(c.report,stops,c.foreground)
     val count=stops.size
     if(count==0)return
@@ -804,7 +841,7 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
 @Composable internal fun Artwork(c:DiaryController,id:String,modifier:Modifier,onTint:((List<Color>)->Unit)?=null,edge:Int=720,onBitmap:((android.graphics.Bitmap)->Unit)?=null,contentScale:ContentScale=ContentScale.Fit){
     val hidden=id.startsWith("artist:")&&!c.artistPhotosEnabled
     var bitmap by remember(id,edge){mutableStateOf(c.images.peek(id,edge))}
-    DisposableEffect(id,edge,hidden,c.imageNetwork,c.imageEpoch,c.report.lastSync){val subscription=if(hidden)null else c.images.load(id,edge){image->if(image!=null)bitmap=image};onDispose{subscription?.close()}}
+    DisposableEffect(id,edge,hidden,c.imageNetwork,c.imageEpoch,c.artEpoch){val subscription=if(hidden)null else c.images.load(id,edge){image->if(image!=null)bitmap=image};onDispose{subscription?.close()}}
     val image=if(hidden)null else bitmap
     var phase by remember(id){mutableStateOf("")}
     LaunchedEffect(id,image==null,c.foreground,c.imageNetwork){if(edge>=720&&image==null&&c.foreground)while(true){phase=c.images.phase(id);delay(1000)}}
@@ -832,15 +869,45 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
     if(s.artist!=null || s.album!=null){MusicGroupDetail(c,s,back,shared,visibility,onTint);return}
     val detailReport=if(c.summary)c.summaryFacts.report else c.report
     val current=detailReport.history
-    val (p,all,totals)=remember(current,s.play){val updated=current.firstOrNull{it.id==s.play.id};val merged=s.play.copy(artist=updated?.artist?:s.play.artist,album=updated?.album?:s.play.album);val matched=current.filter{it.id==merged.id};Triple(merged,matched,matched.sumOf{it.ms} to matched.sumOf{it.effective})}
+    val (p,all,totals)=remember(RefKey(current),s.play){val updated=current.firstOrNull{it.id==s.play.id};val merged=s.play.copy(artist=updated?.artist?:s.play.artist,album=updated?.album?:s.play.album);val matched=current.filter{it.id==merged.id};Triple(merged,matched,matched.sumOf{it.ms} to matched.sumOf{it.effective})}
     val dayOnly=!c.summary&&c.range==DiaryRange.DAY
     val weekly=if(c.summary||c.range!=DiaryRange.DAY)rememberWeeklyDetail(c,WeeklyTarget(p))else null
+    val anomaly=remember(RefKey(current),p.id,dayOnly,c.demo){if(dayOnly&&!c.demo)analyzeDailyPlaybackAnomaly(current,p.id) else null}
+    var undoInfo by remember(p.id,c.day){mutableStateOf<DailyCorrectionUndoInfo?>(null)}
+    LaunchedEffect(p.id,c.day,c.dataRevision,dayOnly,c.demo){
+        undoInfo=if(dayOnly&&!c.demo){
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO){DiaryDatabase.get(c.activity).readCorrectionUndo(c.day,p.id)}
+        }else null
+    }
+    var correcting by remember(p.id,c.day){mutableStateOf(false)}
     val actions=LocalDetailActions.current
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding().testTag("song-detail"),contentPadding=PaddingValues(25.dp),verticalArrangement=Arrangement.spacedBy(if(dayOnly)8.dp else 24.dp)){
         item{Row(Modifier.press(back).semantics{contentDescription="返回日记"}.padding(vertical=12.dp),verticalAlignment=Alignment.CenterVertically){DiaryGlyph("back",Modifier.size(24.dp),color=Accent);Text("返回日记",color=Accent,fontSize=17.sp)}}
         item{with(shared){Artwork(c,p.id,Modifier.fillMaxWidth().aspectRatio(1f).detailSource(s.key,shape=RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)),onTint=onTint,edge=1200)}}
         item{Column(verticalArrangement=Arrangement.spacedBy(10.dp)){AppleLinkTitle(p.title,30,Modifier.testTag("apple-song-link")){openAppleMusic(c,"song",p,p.title)};AppleLinkTitle(p.artist,18,Modifier.testTag("song-open-artist"),Accent){actions?.artist?.invoke(p.artist,"song-artist:${p.id}")};Text(if(!c.summary&&p.album.isNotBlank())"${p.album} ›"else p.album,Modifier.then(if(!c.summary&&p.album.isNotBlank()&&actions!=null)Modifier.testTag("weekly-open-album").press{actions.album(p,"weekly-album-link:${p.id}")}else Modifier),color=Muted,fontSize=14.sp)}}
         item{Row(Modifier.fillMaxWidth().then(glass(b)).padding(23.dp),horizontalArrangement=Arrangement.SpaceBetween){Metric(duration(totals.first),if(c.summary)"全部实际聆听" else if(weekly!=null)"${detailPeriodName(c.range)}实际聆听"else "本期实际聆听",Accent);Metric("${totals.second}","有效播放",Pink)}}
+        if(dayOnly&&!c.demo&&(anomaly!=null||undoInfo!=null)&&!c.loading){
+            item("anomaly-correction"){
+                DailyPlaybackCorrectionCard(
+                    anomaly=anomaly,
+                    undoInfo=undoInfo,
+                    dayTrackPlays=all,
+                    busy=correcting,
+                    onApply={targetPlays,removedEffective,removedMs,visits->
+                        correcting=true
+                        c.correctDailyTrackPlayback(c.day,p.id,p.title,visits,targetPlays,removedEffective,removedMs){
+                            correcting=false
+                        }
+                    },
+                    onUndo={
+                        correcting=true
+                        c.undoDailyTrackCorrection(c.day,p.id,p.title){
+                            correcting=false
+                        }
+                    }
+                )
+            }
+        }
         if(!dayOnly){
             val label=latestDeviceLabel(detailReport.segments.filter{it.id==p.id})
             if(label.isNotEmpty())item("song-devices"){Column{Text("\u6700\u8fd1\u4e00\u6b21\u8bb0\u5f55",fontSize=18.sp,fontWeight=FontWeight.SemiBold);Text(label,Modifier.padding(top=5.dp),fontSize=13.sp,color=Muted)}}
@@ -865,8 +932,8 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
     val weekly=if(c.summary||c.range!=DiaryRange.DAY)rememberWeeklyDetail(c,if(artist!=null)WeeklyTarget(s.play.copy(artist=artist),artist=true)else weeklySelectionTarget(records,s.play.copy(album=s.album?:s.play.album),true))else null
     val albumTitle=weekly?.target?.play?.album?:s.album
     val albumArtist=weekly?.target?.play?.artist?:s.play.artist
-    val baseSongs=remember(records,artist,albumTitle,albumArtist){sortedPlays(records.filter{if(artist!=null)it.artist==artist else it.album==albumTitle&&it.artist==albumArtist},SortOrder.COUNT)}
-    val firstPlayMap=remember(records,artist,s.album,s.play.artist,c.summary){
+    val baseSongs=remember(RefKey(records),artist,albumTitle,albumArtist){sortedPlays(records.filter{if(artist!=null)it.artist==artist else it.album==albumTitle&&it.artist==albumArtist},SortOrder.COUNT)}
+    val firstPlayMap=remember(RefKey(records),artist,s.album,s.play.artist,c.summary){
         if(c.summary){
             baseSongs.associate{p->p.id to (c.summaryFacts.trackFirstPlay(p.id)?:p)}
         }else{
@@ -888,7 +955,7 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
     }
     val albumCount=remember(baseSongs){baseSongs.map{it.album}.filter{it.isNotBlank()}.distinct().size}
     val songSummary=remember(baseSongs,weekly!=null,c.range,artist,albumCount){(if(c.summary)"累计收听${baseSongs.size}首" else if(weekly!=null)"${detailPeriodName(c.range)}收听${baseSongs.size}首"else "${baseSongs.size}首歌曲")+(if(artist!=null&&(c.summary||c.range!=DiaryRange.DAY))" · ${albumCount}张专辑"else "")+" · ${baseSongs.sumOf{it.effective}}次播放 · ${shortDuration(baseSongs.sumOf{it.ms})}"}
-    val artistAlbums=remember(records,artist,c.summary){if(artist==null)emptyList() else if(c.summary)c.summaryFacts.albums.filter{it.artist==artist} else reportAlbums(c.report).filter{it.artist==artist}}
+    val artistAlbums=remember(RefKey(records),artist,c.summary){if(artist==null)emptyList() else if(c.summary)c.summaryFacts.albums.filter{it.artist==artist} else reportAlbums(c.report).filter{it.artist==artist}}
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding().testTag("music-group-detail"),contentPadding=PaddingValues(25.dp),verticalArrangement=Arrangement.spacedBy(if(dayOnly&&artist==null)8.dp else if(dayOnly)14.dp else 20.dp)){
         item{Row(Modifier.press(back).semantics{contentDescription="返回日记"}.padding(vertical=12.dp),verticalAlignment=Alignment.CenterVertically){DiaryGlyph("back",Modifier.size(24.dp),color=Accent);Text("返回日记",color=Accent,fontSize=17.sp)}}
         item{with(shared){Artwork(c,if(artist!=null)"artist:$artist" else s.play.id,Modifier.fillMaxWidth().aspectRatio(1f).detailSource(s.key,shape=RoundedCornerShape(30.dp)).clip(RoundedCornerShape(30.dp)),onTint=onTint,edge=1200)}}
@@ -959,7 +1026,7 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
 }
 
 @Composable private fun RhythmPlot(r:DiaryReport,modifier:Modifier,twelve:Boolean=false){
-    val sessions=remember(r.segments){ListeningSessions.group(r.segments)}
+    val sessions=remember(RefKey(r.segments)){ListeningSessions.group(r.segments)}
     Column(modifier,horizontalAlignment=Alignment.CenterHorizontally){
         Box(Modifier.weight(1f).aspectRatio(1f),contentAlignment=Alignment.Center){
             Canvas(Modifier.fillMaxSize().padding(8.dp)){var start=-90f;val total=sessions.sumOf{it.ms};sessions.forEachIndexed{i,session->val sweep=if(total>0)session.ms.toFloat()/total*360 else 0f;if(sweep>0)drawArc(Palette[i%Palette.size],start+.8f,(sweep-1.6f).coerceAtLeast(.1f),false,style=Stroke(10.dp.toPx(),cap=StrokeCap.Round));start+=sweep}}
@@ -970,7 +1037,7 @@ internal fun shortDuration(ms:Long)=if(ms<60000)"${ms/1000} 秒" else if(ms<3600
 }
 
 @Composable private fun SessionSheet(c:DiaryController,r:DiaryReport,dismiss:()->Unit){
-    val sessions=remember(r.segments){ListeningSessions.group(r.segments)}
+    val sessions=remember(RefKey(r.segments)){ListeningSessions.group(r.segments)}
     var expanded by remember{mutableStateOf(sessions.lastOrNull()?.key)}
     val panel=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.45f)
     ModalBottomSheet(onDismissRequest=dismiss,containerColor=MaterialTheme.colorScheme.surface){
